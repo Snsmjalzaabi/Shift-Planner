@@ -1,0 +1,119 @@
+{
+  "project_name": "Foxory Shift Calendar",
+  "theme_and_archetype": {
+    "theme": "Dark",
+    "archetype": "Archetype 5 (Luxury) blended with Archetype 4 (High-Contrast/Clarity)",
+    "reasoning": "Nurses and caregivers need extreme clarity (High-Contrast) to avoid mistakes, but the brand explicitly requests a premium 'Foxory dark purple/neon purple style'. We use deep space purple-blacks to reduce OLED smearing, paired with highly legible off-white text and sharp neon purple accents to guide action."
+  },
+  "color_palette": {
+    "backgrounds": {
+      "app_bg": "#090514",
+      "surface_card": "#140C27",
+      "surface_elevated": "#1E143A"
+    },
+    "borders": {
+      "default": "#2D1B4E",
+      "active": "#A855F7"
+    },
+    "brand_neon": {
+      "primary": "#A855F7",
+      "primary_hover": "#C084FC",
+      "glow": "rgba(168, 85, 247, 0.4)"
+    },
+    "text": {
+      "primary": "#F8FAFC",
+      "secondary": "#94A3B8",
+      "muted": "#64748B",
+      "accent": "#C084FC"
+    },
+    "semantic_shifts": {
+      "day_shift": {"bg": "rgba(251, 191, 36, 0.15)", "text": "#FCD34D", "border": "rgba(251, 191, 36, 0.3)"},
+      "night_shift": {"bg": "rgba(56, 189, 248, 0.15)", "text": "#7DD3FC", "border": "rgba(56, 189, 248, 0.3)"},
+      "on_call": {"bg": "rgba(244, 63, 94, 0.15)", "text": "#FDA4AF", "border": "rgba(244, 63, 94, 0.3)"}
+    }
+  },
+  "typography": {
+    "font_families": {
+      "headings": "Outfit, sans-serif",
+      "body": "Outfit, sans-serif"
+    },
+    "scale": {
+      "h1_hero": "text-3xl sm:text-4xl font-bold tracking-tight text-[#F8FAFC]",
+      "h2_section": "text-xl sm:text-2xl font-semibold tracking-tight text-[#F8FAFC]",
+      "h3_card": "text-lg font-medium text-[#F8FAFC]",
+      "body": "text-sm sm:text-base text-[#94A3B8] leading-relaxed",
+      "small_label": "text-xs font-medium tracking-[0.05em] uppercase text-[#64748B]"
+    }
+  },
+  "spacing_and_layout": {
+    "mobile_container": "px-4 sm:px-6 w-full max-w-md mx-auto",
+    "card_padding": "p-5",
+    "gap_standard": "gap-4",
+    "border_radius": {
+      "card": "rounded-2xl",
+      "button": "rounded-xl",
+      "chip": "rounded-md"
+    }
+  },
+  "components": {
+    "placeholder_logo": {
+      "description": "Premium minimalist crescent/fox logo using an image + Lucide icon. Position image centrally, apply neon purple tint/overlay via CSS if possible, or pair it with a Lucide 'CalendarDays' icon colored in neon purple.",
+      "classes": "w-12 h-12 rounded-xl border border-[#2D1B4E] bg-[#140C27] flex items-center justify-center shadow-[0_0_15px_rgba(168,85,247,0.2)]"
+    },
+    "login_screen": {
+      "layout": "Flex column, centered, min-h-screen bg-[#090514] p-6",
+      "header_area": "flex flex-col items-center gap-4 mb-8",
+      "app_name": "text-3xl font-bold tracking-tight text-center text-white",
+      "subtitle": "text-sm text-center text-[#94A3B8] max-w-[280px]",
+      "form_card": "w-full bg-[#140C27] border border-[#2D1B4E] rounded-2xl p-6 shadow-xl",
+      "footer_tag": "mt-auto pt-8 text-center"
+    },
+    "dashboard_header": {
+      "layout": "Sticky top-0 z-50 flex justify-between items-center px-4 py-3 bg-[#090514]/80 backdrop-blur-xl border-b border-[#2D1B4E]",
+      "left_side": "flex items-center gap-3",
+      "app_name_inline": "text-base font-semibold text-white tracking-tight hidden sm:block",
+      "account_badge": "px-2.5 py-1 rounded-full border border-[#A855F7]/30 bg-[#A855F7]/10 text-[#C084FC] text-[10px] font-bold tracking-wide uppercase"
+    },
+    "calendar_grid": {
+      "container": "grid grid-cols-7 gap-px bg-[#2D1B4E] rounded-xl overflow-hidden border border-[#2D1B4E]",
+      "day_cell": "bg-[#090514] min-h-[80px] p-1 flex flex-col gap-1",
+      "date_number": "text-xs font-medium text-[#94A3B8] text-right p-1",
+      "shift_chip": "w-full px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-semibold truncate border"
+    },
+    "bottom_tab_bar": {
+      "layout": "Fixed bottom-0 w-full pb-safe pt-2 px-4 bg-[#140C27]/95 backdrop-blur-2xl border-t border-[#2D1B4E] flex justify-around items-center z-50",
+      "tab_item_inactive": "flex flex-col items-center gap-1 text-[#64748B] transition-colors p-2",
+      "tab_item_active": "flex flex-col items-center gap-1 text-[#A855F7] transition-colors p-2 drop-shadow-[0_0_8px_rgba(168,85,247,0.4)]"
+    },
+    "creator_signature_tag": {
+      "description": "Subtle, non-intrusive link indicating Foxory.net created the app.",
+      "container_classes": "text-[11px] text-[#64748B]",
+      "link_classes": "text-[#94A3B8] hover:text-[#C084FC] underline decoration-[#A855F7]/40 underline-offset-4 transition-colors font-medium",
+      "locations": ["Login screen footer", "Settings page footer"]
+    }
+  },
+  "export_branding": {
+    "xlsx_plan_summary": {
+      "headers": [
+        "App Name: Foxory Shift Calendar",
+        "Created By: Foxory.net",
+        "Export Type: Draft Planner Export"
+      ],
+      "disclaimer": "Reminder: This draft plan does not change the confirmed calendar.",
+      "styling": "Use bold font for headers, subtle gray background for the disclaimer row."
+    },
+    "email_export": {
+      "footer_text": "This draft shift plan was created using Foxory Shift Calendar — created by Foxory.net.",
+      "styling": "Add a small 1px subtle divider before the footer, use smaller font size and gray color for the footer text so it feels like a signature, not spam."
+    }
+  },
+  "media": {
+    "placeholder_crescent": {
+      "url": "https://images.unsplash.com/photo-1527842891421-42eec6e703ea?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHwxfHxjcmVzY2VudCUyMG1vb24lMjBtaW5pbWFsJTIwbG9nb3xlbnwwfHx8fDE3ODMyNDY0Njd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Minimalist crescent moon to be used inside the placeholder logo container if no SVG is available."
+    }
+  },
+  "testing_attributes": {
+    "instructions": "All interactive and key informational elements MUST include a data-testid attribute in kebab-case, representing the element's role (e.g., data-testid='login-submit-button', data-testid='shift-day-chip-12')."
+  }
+}

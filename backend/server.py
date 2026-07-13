@@ -43,12 +43,21 @@ load_dotenv(ROOT_DIR / ".env")
 # ---------------------------------------------------------------------------
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-JWT_SECRET = os.environ.get("JWT_SECRET", "foxory-shift-calendar-dev-secret-change-me")
+
+# SEC-002: JWT_SECRET must be provided by env; refuse to start on any default.
+JWT_SECRET = os.environ.get("JWT_SECRET", "").strip()
+if not JWT_SECRET or len(JWT_SECRET) < 32:
+    raise RuntimeError(
+        "JWT_SECRET must be set in the backend environment (>=32 chars). "
+        "Generate one with: python -c \"import secrets;print(secrets.token_urlsafe(48))\""
+    )
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRES_HOURS = 24 * 7  # 7 days
 
-SUPERUSER_EMAIL = os.environ.get("SUPERUSER_EMAIL", "Sultan942002@yahoo.com")
-SUPERUSER_PASSWORD = os.environ.get("SUPERUSER_PASSWORD", "S.nsmjalzaabi1")
+# SEC-001: superuser credentials come from env only. If either is missing we
+# simply skip the seed; there are no source-code defaults.
+SUPERUSER_EMAIL = os.environ.get("SUPERUSER_EMAIL", "").strip()
+SUPERUSER_PASSWORD = os.environ.get("SUPERUSER_PASSWORD", "").strip()
 
 SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "").strip()
 SENDGRID_FROM_EMAIL = os.environ.get(
@@ -64,6 +73,9 @@ ZIINA_CURRENCY = os.environ.get("ZIINA_CURRENCY", "AED").strip().upper()
 ZIINA_WEBHOOK_SECRET = os.environ.get("ZIINA_WEBHOOK_SECRET", "").strip()
 PLUS_PLAN_ID = "plus_yearly"
 PLUS_DURATION_DAYS = 365
+
+# SEC-004: per-user daily send quota for real email delivery.
+EMAIL_SEND_DAILY_QUOTA = int(os.environ.get("EMAIL_SEND_DAILY_QUOTA", "30"))
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -184,13 +196,19 @@ async def seed_superuser() -> None:
     await db.users.create_index("id", unique=True)
     await db.shifts.create_index([("user_id", 1), ("date", 1)])
 
+    # SEC-001: only seed when both env vars are present; never overwrite an
+    # existing user's password on subsequent boots.
+    if not SUPERUSER_EMAIL or not SUPERUSER_PASSWORD:
+        logger.info("Superuser seed skipped (SUPERUSER_EMAIL/PASSWORD not set)")
+        return
+
     existing = await db.users.find_one({"email": SUPERUSER_EMAIL})
     now = datetime.now(timezone.utc)
     if existing is None:
         user_doc = {
             "id": str(uuid.uuid4()),
             "email": SUPERUSER_EMAIL,
-            "display_name": "Sultan",
+            "display_name": SUPERUSER_EMAIL.split("@")[0],
             "hashed_password": hash_password(SUPERUSER_PASSWORD),
             "is_superuser": True,
             "plan": "plus",
@@ -200,18 +218,13 @@ async def seed_superuser() -> None:
         await db.users.insert_one(user_doc)
         logger.info("Seeded superuser %s", SUPERUSER_EMAIL)
     else:
+        # Only re-affirm the superuser flag; leave password + plan untouched
+        # so env leakage can't silently reset the admin password.
         await db.users.update_one(
             {"_id": existing["_id"]},
-            {
-                "$set": {
-                    "is_superuser": True,
-                    "plan": existing.get("plan", "plus"),
-                    "hashed_password": hash_password(SUPERUSER_PASSWORD),
-                    "updated_at": now,
-                }
-            },
+            {"$set": {"is_superuser": True, "updated_at": now}},
         )
-        logger.info("Refreshed superuser %s", SUPERUSER_EMAIL)
+        logger.info("Superuser %s already present; flag re-affirmed", SUPERUSER_EMAIL)
 
 
 @asynccontextmanager
@@ -605,11 +618,11 @@ async def verify_checkout(
 # Ziina webhook receiver (payment_intent.status.updated)
 # ---------------------------------------------------------------------------
 def _verify_ziina_signature(raw_body: bytes, signature: Optional[str]) -> bool:
+    # SEC-003: fail closed. Never accept unsigned webhooks — an operator who
+    # rotates ZIINA_WEBHOOK_SECRET away must configure a new one.
     if not ZIINA_WEBHOOK_SECRET:
-        # No secret configured → accept but log. Registering the webhook
-        # WITH a secret in Ziina's dashboard is strongly recommended.
-        logger.warning("Ziina webhook received but ZIINA_WEBHOOK_SECRET is empty.")
-        return True
+        logger.warning("Ziina webhook rejected: ZIINA_WEBHOOK_SECRET is empty")
+        return False
     if not signature:
         return False
     expected = hmac.new(
@@ -1143,7 +1156,19 @@ async def export_email(body: ExportRequest, current_user: dict = Depends(get_cur
     except ValueError:
         raise HTTPException(status_code=400, detail="month must be YYYY-MM")
     shifts = await _fetch_shifts_for_export(current_user["id"], body.month, body.include_confirmed)
-    to_email = body.email_to or current_user["email"]
+
+    # SEC-004: hard-pin recipient to the authenticated user's own email.
+    # Any client-supplied `email_to` that is not the caller's email is
+    # rejected so the send endpoint cannot be used to relay branded email
+    # to arbitrary third parties.
+    owner_email = current_user["email"]
+    if body.email_to and body.email_to.lower() != owner_email.lower():
+        raise HTTPException(
+            status_code=400,
+            detail="For now, draft plans can only be emailed to your own account address.",
+        )
+    to_email = owner_email
+
     subject = f"Foxory Shift Calendar — Draft Plan for {body.month}"
     body_text = _build_email_body(current_user, body.month, shifts)
     body_html = _build_email_html(current_user, body.month, shifts)
@@ -1164,6 +1189,21 @@ async def export_email(body: ExportRequest, current_user: dict = Depends(get_cur
 
     if body.send:
         _require_plus(current_user)
+
+        # SEC-004: per-user daily quota on real sends.
+        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        recent = await db.email_sends.count_documents(
+            {"user_id": current_user["id"], "sent_at": {"$gte": since}}
+        )
+        if recent >= EMAIL_SEND_DAILY_QUOTA:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"Daily email quota reached ({EMAIL_SEND_DAILY_QUOTA}/24h). "
+                    "Try again later."
+                ),
+            )
+
         attachment = None
         if body.attach_xlsx:
             xlsx_bytes = _build_xlsx(current_user, body.month, shifts)
@@ -1179,6 +1219,20 @@ async def export_email(body: ExportRequest, current_user: dict = Depends(get_cur
         result["provider"] = "sendgrid" if SENDGRID_API_KEY else None
         result["message_id"] = message_id
         result["delivery_error"] = err
+
+        await db.email_sends.insert_one(
+            {
+                "id": str(uuid.uuid4()),
+                "user_id": current_user["id"],
+                "to": to_email,
+                "month": body.month,
+                "shift_count": len(shifts),
+                "delivered": delivered,
+                "message_id": message_id,
+                "error": err,
+                "sent_at": datetime.now(timezone.utc),
+            }
+        )
 
     return result
 

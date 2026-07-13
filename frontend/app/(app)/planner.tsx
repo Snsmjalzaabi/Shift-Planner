@@ -481,7 +481,7 @@ export default function PlannerScreen() {
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
               >
-                <Text style={styles.emailLabel}>Recipient</Text>
+                <Text style={styles.emailLabel}>Recipient (your account email)</Text>
                 <View style={styles.recipientRow}>
                   <Ionicons
                     name="mail-outline"
@@ -492,12 +492,13 @@ export default function PlannerScreen() {
                   <TextInput
                     testID="email-recipient-input"
                     value={recipient}
-                    onChangeText={setRecipient}
-                    placeholder="you@example.com"
-                    placeholderTextColor={colors.textMuted}
-                    autoCapitalize="none"
-                    keyboardType="email-address"
-                    style={styles.recipientInput}
+                    editable={false}
+                    style={[styles.recipientInput, { color: colors.textSecondary }]}
+                  />
+                  <Ionicons
+                    name="lock-closed"
+                    size={13}
+                    color={colors.textMuted}
                   />
                 </View>
 

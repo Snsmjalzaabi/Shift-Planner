@@ -500,7 +500,7 @@ async def billing_config():
                 "features": [
                     "XLSX export with Plan Summary + Shift Details",
                     "Attach XLSX to email exports",
-                    "Send real emails via SendGrid",
+                    "One-tap draft plan email from your device's mail app",
                     "Multi-month planning (any past/future month)",
                     "Priority support",
                 ],

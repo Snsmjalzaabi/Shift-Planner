@@ -37,3 +37,23 @@ Premium mobile shift planner for nurses and caregivers with **Foxory dark-purple
 ## Test status
 - 11/11 backend pytest cases pass (`/app/backend/tests/backend_test.py`).
 - End-to-end mobile flow verified via Playwright screenshots (login → dashboard → shift editor → save → planner → XLSX export → email preview → settings).
+
+## Email delivery (real, via SendGrid)
+`POST /api/export/email` accepts `send: true` and `attach_xlsx: true` (with optional `email_to`) to actually deliver via SendGrid. It uses `SENDGRID_API_KEY` + `SENDGRID_FROM_EMAIL` env vars (see `/app/backend/.env`). When the key is empty the endpoint gracefully degrades to preview-only and returns `sendgrid_configured: false` + `delivery_error: "no_api_key"` — the frontend surfaces this as a subtle purple warning inside the Email Preview sheet. Response contract:
+```
+{ to, subject, body, html, shift_count, signature,
+  delivered, provider, message_id, delivery_error, sendgrid_configured }
+```
+The email is sent with **both plain text and branded HTML**, and (when `attach_xlsx`) with the .xlsx workbook attached.
+
+**To turn on real delivery:**
+1. Get a SendGrid API key at https://app.sendgrid.com/settings/api_keys
+2. Verify a sender domain / single sender in SendGrid
+3. Set `SENDGRID_API_KEY="SG.xxx..."` and `SENDGRID_FROM_EMAIL="Foxory Shift Calendar <no-reply@foxory.net>"` in `/app/backend/.env`
+4. Restart the backend (`sudo supervisorctl restart backend`)
+
+## XLSX real file download
+`saveAndShareXlsx(base64, filename)` in `/app/frontend/src/utils/downloadXlsx.ts`:
+- **Web**: builds a `Blob` from the base64 and triggers a real browser download.
+- **iOS / Android** (dev / production build): writes the base64 payload to `Paths.cache` using the new SDK 54 `File` API and opens the native share sheet via `expo-sharing` so the user can save to Files / send to Numbers / Mail / etc.
+- Returns `{ok, method, uri?, error?}` — the Planner tab shows the exact outcome ("Downloaded" / "Ready to share" / "Saved to device") on the success card.

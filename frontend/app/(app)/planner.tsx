@@ -4,11 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -19,6 +22,7 @@ import { useAuth } from "@/src/context/AuthContext";
 import { api, Shift } from "@/src/lib/api";
 import { colors, radius, shiftTheme, spacing } from "@/src/theme/colors";
 import { currentMonthKey, monthLabel, shiftDateDisplay } from "@/src/utils/dateUtils";
+import { saveAndShareXlsx } from "@/src/utils/downloadXlsx";
 
 type Filter = "all" | "draft" | "confirmed";
 
@@ -41,8 +45,21 @@ export default function PlannerScreen() {
     filename: string;
     size_bytes: number;
     shift_count: number;
+    method?: "web-download" | "share-sheet" | "saved";
   } | null>(null);
+  const [xlsxError, setXlsxError] = useState<string | null>(null);
   const [copied, setCopied] = useState<"body" | "subject" | null>(null);
+
+  // email compose state (inside preview modal)
+  const [recipient, setRecipient] = useState<string>("");
+  const [attachXlsx, setAttachXlsx] = useState<boolean>(true);
+  const [sending, setSending] = useState<boolean>(false);
+  const [sendStatus, setSendStatus] = useState<{
+    delivered: boolean;
+    provider: string | null;
+    error: string | null;
+    sendgrid_configured: boolean;
+  } | null>(null);
 
   const [y, m] = month.split("-").map(Number);
 
@@ -91,15 +108,28 @@ export default function PlannerScreen() {
     if (!token) return;
     setExportingXlsx(true);
     setXlsxResult(null);
+    setXlsxError(null);
     try {
-      const res = await api.exportXlsx(token, { month, include_confirmed: filter === "all" });
-      setXlsxResult({
-        filename: res.filename,
-        size_bytes: res.size_bytes,
-        shift_count: res.shift_count,
+      const res = await api.exportXlsx(token, {
+        month,
+        include_confirmed: filter === "all",
       });
-    } catch {
-      // ignore
+      const saved = await saveAndShareXlsx(res.base64, res.filename);
+      if (saved.ok) {
+        setXlsxResult({
+          filename: res.filename,
+          size_bytes: res.size_bytes,
+          shift_count: res.shift_count,
+          method:
+            saved.method === "failed"
+              ? undefined
+              : (saved.method as "web-download" | "share-sheet" | "saved"),
+        });
+      } else {
+        setXlsxError(saved.error || "Could not save the file.");
+      }
+    } catch (e: any) {
+      setXlsxError(e?.message || "Export failed.");
     } finally {
       setExportingXlsx(false);
     }
@@ -109,16 +139,57 @@ export default function PlannerScreen() {
     if (!token) return;
     setExportingEmail(true);
     setEmailPreview(null);
+    setSendStatus(null);
     try {
       const res = await api.exportEmail(token, {
         month,
         include_confirmed: filter === "all",
       });
       setEmailPreview({ to: res.to, subject: res.subject, body: res.body });
+      setRecipient(res.to);
+      setSendStatus({
+        delivered: false,
+        provider: null,
+        error: null,
+        sendgrid_configured: res.sendgrid_configured,
+      });
     } catch {
       // ignore
     } finally {
       setExportingEmail(false);
+    }
+  };
+
+  const doSendEmail = async () => {
+    if (!token) return;
+    setSending(true);
+    try {
+      const res = await api.exportEmail(token, {
+        month,
+        include_confirmed: filter === "all",
+        email_to: recipient || undefined,
+        send: true,
+        attach_xlsx: attachXlsx,
+      });
+      setSendStatus({
+        delivered: res.delivered,
+        provider: res.provider,
+        error: res.delivery_error,
+        sendgrid_configured: res.sendgrid_configured,
+      });
+      if (res.delivered) {
+        // refresh subject/body/to in case backend rewrote them
+        setEmailPreview({ to: res.to, subject: res.subject, body: res.body });
+      }
+    } catch (e: any) {
+      setSendStatus({
+        delivered: false,
+        provider: null,
+        error: e?.message || "Send failed",
+        sendgrid_configured: sendStatus?.sendgrid_configured ?? false,
+      });
+    } finally {
+      setSending(false);
     }
   };
 
@@ -240,9 +311,35 @@ export default function PlannerScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.resultTitle}>{xlsxResult.filename}</Text>
               <Text style={styles.resultMeta}>
-                {xlsxResult.shift_count} shift{xlsxResult.shift_count === 1 ? "" : "s"} · {(xlsxResult.size_bytes / 1024).toFixed(1)} KB
+                {xlsxResult.shift_count} shift
+                {xlsxResult.shift_count === 1 ? "" : "s"} ·{" "}
+                {(xlsxResult.size_bytes / 1024).toFixed(1)} KB ·{" "}
+                {xlsxResult.method === "web-download"
+                  ? "Downloaded"
+                  : xlsxResult.method === "share-sheet"
+                  ? "Ready to share"
+                  : "Saved to device"}
               </Text>
               <Text style={styles.resultSig}>Created by Foxory.net</Text>
+            </View>
+          </View>
+        )}
+
+        {xlsxError && (
+          <View
+            style={[styles.resultBox, styles.errorResultBox]}
+            testID="xlsx-error"
+          >
+            <Ionicons
+              name="alert-circle"
+              size={18}
+              color={colors.danger}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.resultTitle, { color: colors.danger }]}>
+                Could not save file
+              </Text>
+              <Text style={styles.resultMeta}>{xlsxError}</Text>
             </View>
           </View>
         )}
@@ -356,14 +453,30 @@ export default function PlannerScreen() {
 
             {emailPreview && (
               <ScrollView
-                style={{ maxHeight: 460 }}
+                style={{ maxHeight: 480 }}
                 showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
               >
-                <EmailField
-                  label="To"
-                  value={emailPreview.to}
-                  testID="email-to"
-                />
+                <Text style={styles.emailLabel}>Recipient</Text>
+                <View style={styles.recipientRow}>
+                  <Ionicons
+                    name="mail-outline"
+                    size={16}
+                    color={colors.textMuted}
+                    style={{ marginRight: 8 }}
+                  />
+                  <TextInput
+                    testID="email-recipient-input"
+                    value={recipient}
+                    onChangeText={setRecipient}
+                    placeholder="you@example.com"
+                    placeholderTextColor={colors.textMuted}
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                    style={styles.recipientInput}
+                  />
+                </View>
+
                 <EmailField
                   label="Subject"
                   value={emailPreview.subject}
@@ -371,10 +484,12 @@ export default function PlannerScreen() {
                   onCopy={() => copyToClip(emailPreview.subject, "subject")}
                   copied={copied === "subject"}
                 />
+
                 <Text style={styles.emailLabel}>Body</Text>
                 <View style={styles.emailBody} testID="email-body">
                   <Text style={styles.emailBodyText}>{emailPreview.body}</Text>
                 </View>
+
                 <TouchableOpacity
                   testID="copy-email-body"
                   onPress={() => copyToClip(emailPreview.body, "body")}
@@ -389,6 +504,103 @@ export default function PlannerScreen() {
                     {copied === "body" ? "Copied!" : "Copy full email body"}
                   </Text>
                 </TouchableOpacity>
+
+                <View style={styles.attachRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.attachTitle}>Attach XLSX workbook</Text>
+                    <Text style={styles.attachSub}>
+                      Includes Plan Summary + Shift Details sheets.
+                    </Text>
+                  </View>
+                  <Switch
+                    testID="attach-xlsx-toggle"
+                    value={attachXlsx}
+                    onValueChange={setAttachXlsx}
+                    thumbColor={
+                      Platform.OS === "android"
+                        ? attachXlsx
+                          ? colors.neonHover
+                          : colors.textMuted
+                        : undefined
+                    }
+                    trackColor={{
+                      false: colors.border,
+                      true: "rgba(168, 85, 247, 0.55)",
+                    }}
+                  />
+                </View>
+
+                {sendStatus?.sendgrid_configured === false && (
+                  <View style={styles.warnBox} testID="sendgrid-warn">
+                    <Ionicons
+                      name="warning-outline"
+                      size={14}
+                      color={colors.textAccent}
+                    />
+                    <Text style={styles.warnText}>
+                      SendGrid API key not configured on the backend. Preview
+                      only — set{" "}
+                      <Text style={{ fontFamily: "monospace" }}>
+                        SENDGRID_API_KEY
+                      </Text>{" "}
+                      to send real emails.
+                    </Text>
+                  </View>
+                )}
+
+                {sendStatus?.delivered && (
+                  <View style={styles.successBox} testID="send-success">
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={16}
+                      color={colors.success}
+                    />
+                    <Text style={styles.successText}>
+                      Email delivered via SendGrid to{" "}
+                      <Text style={{ fontWeight: "800" }}>
+                        {emailPreview.to}
+                      </Text>
+                      .
+                    </Text>
+                  </View>
+                )}
+
+                {!!sendStatus?.error &&
+                  sendStatus.error !== "no_api_key" &&
+                  !sendStatus.delivered && (
+                    <View style={styles.errorBox} testID="send-error">
+                      <Ionicons
+                        name="alert-circle-outline"
+                        size={14}
+                        color={colors.danger}
+                      />
+                      <Text style={styles.errorText}>
+                        Delivery failed: {sendStatus.error}
+                      </Text>
+                    </View>
+                  )}
+
+                <Pressable
+                  testID="send-email-btn"
+                  onPress={doSendEmail}
+                  disabled={sending || !recipient}
+                  style={({ pressed }) => [
+                    styles.sendBtn,
+                    pressed && { opacity: 0.85 },
+                    (sending || !recipient) && { opacity: 0.6 },
+                  ]}
+                >
+                  {sending ? (
+                    <ActivityIndicator color="#0B0619" />
+                  ) : (
+                    <>
+                      <Ionicons name="send" size={16} color="#0B0619" />
+                      <Text style={styles.sendBtnText}>
+                        {sendStatus?.delivered ? "Send again" : "Send email"}
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
               </ScrollView>
             )}
           </View>
@@ -824,5 +1036,117 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontWeight: "700",
     fontSize: 13,
+  },
+  recipientRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    height: 44,
+    marginBottom: spacing.md,
+  },
+  recipientInput: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: 13.5,
+    paddingVertical: 0,
+  },
+  attachRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    backgroundColor: colors.bg,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  attachTitle: {
+    color: colors.textPrimary,
+    fontSize: 13.5,
+    fontWeight: "700",
+  },
+  attachSub: {
+    color: colors.textMuted,
+    fontSize: 11.5,
+    marginTop: 2,
+  },
+  warnBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+    backgroundColor: "rgba(168, 85, 247, 0.10)",
+    borderColor: "rgba(168, 85, 247, 0.35)",
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  warnText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    flex: 1,
+    lineHeight: 18,
+  },
+  successBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "rgba(74, 222, 128, 0.10)",
+    borderColor: "rgba(74, 222, 128, 0.35)",
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  successText: {
+    color: colors.textPrimary,
+    fontSize: 12.5,
+    flex: 1,
+  },
+  errorBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(248, 113, 113, 0.10)",
+    borderColor: "rgba(248, 113, 113, 0.35)",
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  errorText: {
+    color: colors.danger,
+    fontSize: 12,
+    flex: 1,
+  },
+  errorResultBox: {
+    backgroundColor: "rgba(248, 113, 113, 0.10)",
+    borderColor: "rgba(248, 113, 113, 0.35)",
+  },
+  sendBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: colors.neon,
+    borderRadius: radius.md,
+    height: 50,
+    marginTop: spacing.lg,
+    shadowColor: colors.neon,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 14,
+    elevation: 6,
+  },
+  sendBtnText: {
+    color: "#0B0619",
+    fontWeight: "800",
+    fontSize: 15,
+    letterSpacing: 0.3,
   },
 });

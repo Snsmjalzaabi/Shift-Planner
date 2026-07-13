@@ -332,14 +332,22 @@ export const api = {
       month: string;
       include_confirmed?: boolean;
       email_to?: string;
+      send?: boolean;
+      attach_xlsx?: boolean;
     },
   ) =>
     request<{
       to: string;
       subject: string;
       body: string;
+      html: string;
       shift_count: number;
       signature: string;
+      delivered: boolean;
+      provider: string | null;
+      message_id: string | null;
+      delivery_error: string | null;
+      sendgrid_configured: boolean;
     }>("/export/email", {
       method: "POST",
       body: JSON.stringify(body),

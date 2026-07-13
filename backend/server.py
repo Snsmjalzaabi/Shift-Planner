@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html as html_escape
 import io
 import logging
 import os
@@ -19,6 +20,15 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, EmailStr, Field
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import (
+    Attachment,
+    Disposition,
+    FileContent,
+    FileName,
+    FileType,
+    Mail,
+)
 from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
@@ -35,6 +45,12 @@ JWT_EXPIRES_HOURS = 24 * 7  # 7 days
 
 SUPERUSER_EMAIL = os.environ.get("SUPERUSER_EMAIL", "Sultan942002@yahoo.com")
 SUPERUSER_PASSWORD = os.environ.get("SUPERUSER_PASSWORD", "S.nsmjalzaabi1")
+
+SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "").strip()
+SENDGRID_FROM_EMAIL = os.environ.get(
+    "SENDGRID_FROM_EMAIL",
+    "Foxory Shift Calendar <no-reply@foxory.net>",
+).strip()
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -143,6 +159,8 @@ class ExportRequest(BaseModel):
     month: str  # "YYYY-MM"
     include_confirmed: bool = False
     email_to: Optional[EmailStr] = None
+    send: bool = False  # if True, attempt real delivery via SendGrid
+    attach_xlsx: bool = False  # attach the .xlsx workbook when sending
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +550,142 @@ def _build_email_body(user: dict, month: str, shifts: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _build_email_html(user: dict, month: str, shifts: list[dict]) -> str:
+    def _e(v: Any) -> str:
+        return html_escape.escape(str(v or ""))
+
+    rows_html = ""
+    if not shifts:
+        rows_html = (
+            '<tr><td colspan="4" style="padding:16px;color:#94A3B8;'
+            'font-style:italic;text-align:center;">'
+            "No draft shifts have been added for this month yet.</td></tr>"
+        )
+    else:
+        for s in shifts:
+            label = SHIFT_TYPE_LABELS.get(s.get("type", ""), s.get("type", ""))
+            time_str = ""
+            if s.get("start_time") or s.get("end_time"):
+                time_str = f"{_e(s.get('start_time') or '—')} → {_e(s.get('end_time') or '—')}"
+            rows_html += (
+                "<tr>"
+                f'<td style="padding:10px 12px;border-bottom:1px solid #221641;color:#F8FAFC;font-weight:600;">{_e(s.get("date"))}</td>'
+                f'<td style="padding:10px 12px;border-bottom:1px solid #221641;color:#C084FC;">{_e(label)}</td>'
+                f'<td style="padding:10px 12px;border-bottom:1px solid #221641;color:#94A3B8;font-family:monospace;">{time_str}</td>'
+                f'<td style="padding:10px 12px;border-bottom:1px solid #221641;color:#94A3B8;">{_e(s.get("location") or "")}</td>'
+                "</tr>"
+            )
+
+    greet = _e(user.get("display_name") or user.get("email", "there"))
+
+    return f"""<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#090514;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#090514;padding:24px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#140C27;border:1px solid #2D1B4E;border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:24px 28px 8px;">
+                <div style="color:#C084FC;font-size:11px;letter-spacing:2px;text-transform:uppercase;font-weight:700;">Foxory Shift Calendar</div>
+                <div style="color:#F8FAFC;font-size:22px;font-weight:800;margin-top:4px;">Draft plan for {_e(month)}</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:8px 28px 0;color:#94A3B8;font-size:14px;line-height:22px;">
+                Hi {greet},<br/>
+                Here is your draft shift plan.
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 20px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#0C0620;border:1px solid #221641;border-radius:12px;overflow:hidden;">
+                  <thead>
+                    <tr>
+                      <th align="left" style="padding:10px 12px;color:#64748B;font-size:10px;letter-spacing:1px;text-transform:uppercase;font-weight:700;background:#0F0827;">Date</th>
+                      <th align="left" style="padding:10px 12px;color:#64748B;font-size:10px;letter-spacing:1px;text-transform:uppercase;font-weight:700;background:#0F0827;">Type</th>
+                      <th align="left" style="padding:10px 12px;color:#64748B;font-size:10px;letter-spacing:1px;text-transform:uppercase;font-weight:700;background:#0F0827;">Time</th>
+                      <th align="left" style="padding:10px 12px;color:#64748B;font-size:10px;letter-spacing:1px;text-transform:uppercase;font-weight:700;background:#0F0827;">Location</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows_html}
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:4px 28px 16px;color:#94A3B8;font-size:12px;font-style:italic;">
+                Reminder: This draft plan does not change the confirmed calendar.
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 28px 24px;">
+                <div style="border-top:1px solid #2D1B4E;padding-top:16px;color:#64748B;font-size:11px;">
+                  This draft shift plan was created using
+                  <span style="color:#94A3B8;font-weight:600;">Foxory Shift Calendar</span>
+                  — created by
+                  <a href="https://foxory.net" style="color:#C084FC;text-decoration:underline;">Foxory.net</a>.
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>"""
+
+
+def _send_email_via_sendgrid(
+    to_email: str,
+    subject: str,
+    text_body: str,
+    html_body: str,
+    attachment: Optional[tuple[str, bytes, str]] = None,
+) -> tuple[bool, Optional[str], Optional[str]]:
+    """Send email via SendGrid.
+
+    Returns (delivered, message_id, error). If the API key is missing this
+    returns (False, None, 'no_api_key') so callers can degrade to preview-only.
+    """
+    if not SENDGRID_API_KEY:
+        return False, None, "no_api_key"
+
+    message = Mail(
+        from_email=SENDGRID_FROM_EMAIL,
+        to_emails=to_email,
+        subject=subject,
+        plain_text_content=text_body,
+        html_content=html_body,
+    )
+
+    if attachment:
+        filename, data, content_type = attachment
+        message.attachment = Attachment(
+            FileContent(base64.b64encode(data).decode("ascii")),
+            FileName(filename),
+            FileType(content_type),
+            Disposition("attachment"),
+        )
+
+    try:
+        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        resp = sg.send(message)
+        message_id = None
+        try:
+            message_id = resp.headers.get("X-Message-Id")
+        except Exception:  # noqa: BLE001
+            message_id = None
+        delivered = 200 <= int(getattr(resp, "status_code", 0)) < 300
+        if not delivered:
+            return False, message_id, f"http_{resp.status_code}"
+        return True, message_id, None
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("SendGrid delivery failed")
+        return False, None, str(exc)
+
+
 @api_router.post("/export/xlsx")
 async def export_xlsx(body: ExportRequest, current_user: dict = Depends(get_current_user)):
     try:
@@ -559,15 +713,43 @@ async def export_email(body: ExportRequest, current_user: dict = Depends(get_cur
     except ValueError:
         raise HTTPException(status_code=400, detail="month must be YYYY-MM")
     shifts = await _fetch_shifts_for_export(current_user["id"], body.month, body.include_confirmed)
+    to_email = body.email_to or current_user["email"]
     subject = f"Foxory Shift Calendar — Draft Plan for {body.month}"
     body_text = _build_email_body(current_user, body.month, shifts)
-    return {
-        "to": body.email_to or current_user["email"],
+    body_html = _build_email_html(current_user, body.month, shifts)
+
+    result: dict[str, Any] = {
+        "to": to_email,
         "subject": subject,
         "body": body_text,
+        "html": body_html,
         "shift_count": len(shifts),
         "signature": "Created by Foxory.net",
+        "delivered": False,
+        "provider": None,
+        "message_id": None,
+        "delivery_error": None,
+        "sendgrid_configured": bool(SENDGRID_API_KEY),
     }
+
+    if body.send:
+        attachment = None
+        if body.attach_xlsx:
+            xlsx_bytes = _build_xlsx(current_user, body.month, shifts)
+            attachment = (
+                f"foxory-shift-plan-{body.month}.xlsx",
+                xlsx_bytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        delivered, message_id, err = _send_email_via_sendgrid(
+            to_email, subject, body_text, body_html, attachment
+        )
+        result["delivered"] = delivered
+        result["provider"] = "sendgrid" if SENDGRID_API_KEY else None
+        result["message_id"] = message_id
+        result["delivery_error"] = err
+
+    return result
 
 
 app.include_router(api_router)

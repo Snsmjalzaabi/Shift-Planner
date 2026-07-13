@@ -42,14 +42,26 @@ Premium mobile shift planner for nurses and caregivers with **Foxory dark-purple
 - `GET /api/billing/config` — returns provider, price (AED 10.99/year, `1099` fils), test-mode flag, plan feature list.
 - `POST /api/billing/checkout` — creates a real Ziina `payment_intent` via `https://api-v2.ziina.com/api/payment_intent`, stores the record in `payments` collection, returns `redirect_url` + `payment_intent_id`.
 - `POST /api/billing/verify` — polls Ziina `GET /payment_intent/{id}`; if `status: completed` it flips the user to `plan: "plus"` and sets `plus_expires_at = now + 365d`.
+- `POST /api/billing/webhook` — Ziina webhook receiver. Verifies the `X-Hmac-Signature` (HMAC-SHA256, hex-encoded) against `ZIINA_WEBHOOK_SECRET`, then idempotently flips the user to Plus on `payment_intent.status.updated → completed`. Every event is stored in the `webhook_events` collection for auditing. Rejects with **401** on bad signatures. Verified end-to-end: activate on first hit, `activated:false` on replay.
+- `POST /api/billing/webhook/register` — superuser-only helper that registers the current backend's public webhook URL with Ziina using `ZIINA_WEBHOOK_SECRET`.
 - Frontend `/(app)/upgrade` opens the redirect via `expo-web-browser.openAuthSessionAsync` and verifies on return.
 - **Gated features** (server-enforced 402 with `code: plus_required`):
   - `POST /api/export/xlsx` — Plus only
   - `POST /api/export/email { send: true }` — Plus only
   - `POST /api/shifts` and `PATCH /api/shifts/{id}` for dates outside the current calendar month — Plus only
 - **Client soft-gate**: locked "Export XLSX · Plus" and "Send email · Plus" buttons + shift editor errors all deep-link into `/(app)/upgrade` instead of showing raw errors.
-- **Env vars** (see `/app/backend/.env`): `ZIINA_API_KEY`, `ZIINA_API_BASE`, `ZIINA_TEST_MODE`, `ZIINA_PRICE_FILS`, `ZIINA_CURRENCY`.
-- Test mode is ON by default — flip `ZIINA_TEST_MODE=false` when ready to charge real money.
+- **Env vars** (see `/app/backend/.env`): `ZIINA_API_KEY`, `ZIINA_API_BASE`, `ZIINA_TEST_MODE`, `ZIINA_PRICE_FILS`, `ZIINA_CURRENCY`, `ZIINA_WEBHOOK_SECRET`.
+- Test mode is currently **OFF** (`ZIINA_TEST_MODE=false`) — production charges are live.
+
+### Registering the webhook with Ziina
+Once your backend is publicly reachable, register the webhook so activation still fires when a user closes the app mid-flow:
+```bash
+curl -X POST "$BACKEND/api/billing/webhook/register" \
+  -H "Authorization: Bearer <superuser_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://<your-domain>/api/billing/webhook"}'
+```
+Or register it manually in the Ziina dashboard using the same URL and pasting `ZIINA_WEBHOOK_SECRET` as the secret.
 
 ## Email delivery (real, via SendGrid)
 `POST /api/export/email` accepts `send: true` and `attach_xlsx: true` (with optional `email_to`) to actually deliver via SendGrid. It uses `SENDGRID_API_KEY` + `SENDGRID_FROM_EMAIL` env vars (see `/app/backend/.env`). When the key is empty the endpoint gracefully degrades to preview-only and returns `sendgrid_configured: false` + `delivery_error: "no_api_key"` — the frontend surfaces this as a subtle purple warning inside the Email Preview sheet. Response contract:

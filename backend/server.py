@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import html as html_escape
 import io
+import json
 import logging
 import os
 import uuid
@@ -14,7 +17,7 @@ from typing import Any, Optional
 import bcrypt
 import httpx
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -58,6 +61,7 @@ ZIINA_API_BASE = os.environ.get("ZIINA_API_BASE", "https://api-v2.ziina.com/api"
 ZIINA_TEST_MODE = os.environ.get("ZIINA_TEST_MODE", "true").strip().lower() == "true"
 ZIINA_PRICE_FILS = int(os.environ.get("ZIINA_PRICE_FILS", "1099"))  # 10.99 AED
 ZIINA_CURRENCY = os.environ.get("ZIINA_CURRENCY", "AED").strip().upper()
+ZIINA_WEBHOOK_SECRET = os.environ.get("ZIINA_WEBHOOK_SECRET", "").strip()
 PLUS_PLAN_ID = "plus_yearly"
 PLUS_DURATION_DAYS = 365
 
@@ -255,6 +259,7 @@ async def get_branding():
 # Routes: Auth
 # ---------------------------------------------------------------------------
 def _public_user(user: dict[str, Any]) -> dict[str, Any]:
+    exp = user.get("plus_expires_at")
     return {
         "id": user["id"],
         "email": user["email"],
@@ -264,6 +269,7 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "created_at": user["created_at"].isoformat()
         if isinstance(user["created_at"], datetime)
         else user["created_at"],
+        "plus_expires_at": exp.isoformat() if isinstance(exp, datetime) else exp,
     }
 
 
@@ -501,6 +507,57 @@ async def _fetch_ziina_intent(intent_id: str) -> dict[str, Any]:
     return resp.json()
 
 
+async def _apply_intent_status(
+    intent_id: str,
+    new_status: str,
+    source: str,
+) -> tuple[bool, Optional[datetime], Optional[dict[str, Any]]]:
+    """Idempotently reflect a Ziina payment intent status change in our DB.
+
+    Returns (activated_this_call, plus_expires_at, user_doc) — activated is
+    False if the record was already completed on a previous call."""
+    payment = await db.payments.find_one({"id": intent_id}, {"_id": 0})
+    if not payment:
+        return False, None, None
+
+    now = datetime.now(timezone.utc)
+    already_completed = payment.get("status") == "completed"
+    update_doc: dict[str, Any] = {
+        "status": new_status,
+        "updated_at": now,
+        "last_status_source": source,
+    }
+
+    activated = False
+    expires_at: Optional[datetime] = payment.get("plus_expires_at")
+    fresh_user: Optional[dict[str, Any]] = None
+
+    if new_status == "completed" and not already_completed:
+        expires_at = now + timedelta(days=PLUS_DURATION_DAYS)
+        update_doc.update({"completed_at": now, "plus_expires_at": expires_at})
+        await db.users.update_one(
+            {"id": payment["user_id"]},
+            {
+                "$set": {
+                    "plan": "plus",
+                    "plus_expires_at": expires_at,
+                    "plus_activated_at": now,
+                    "updated_at": now,
+                }
+            },
+        )
+        activated = True
+
+    await db.payments.update_one({"id": intent_id}, {"$set": update_doc})
+
+    if activated:
+        fresh_user = await db.users.find_one(
+            {"id": payment["user_id"]}, {"_id": 0, "hashed_password": 0}
+        )
+
+    return activated, expires_at, fresh_user
+
+
 @api_router.post("/billing/verify")
 async def verify_checkout(
     body: VerifyRequest, current_user: dict = Depends(get_current_user)
@@ -524,32 +581,13 @@ async def verify_checkout(
         raise HTTPException(status_code=502, detail=f"Ziina error: {exc}")
 
     new_status = remote.get("status") or payment.get("status", "pending")
-    now = datetime.now(timezone.utc)
-    activated = False
-    expires_at: Optional[datetime] = None
-    fresh_user = None
+    activated, expires_at, fresh_user = await _apply_intent_status(
+        body.payment_intent_id, new_status, source="verify"
+    )
 
-    update_doc: dict[str, Any] = {"status": new_status, "updated_at": now}
-
-    if new_status == "completed":
-        expires_at = now + timedelta(days=PLUS_DURATION_DAYS)
-        update_doc.update({"completed_at": now, "plus_expires_at": expires_at})
-        await db.users.update_one(
-            {"id": current_user["id"]},
-            {
-                "$set": {
-                    "plan": "plus",
-                    "plus_expires_at": expires_at,
-                    "plus_activated_at": now,
-                    "updated_at": now,
-                }
-            },
-        )
-        activated = True
-
-    await db.payments.update_one({"id": body.payment_intent_id}, {"$set": update_doc})
-
-    if activated:
+    # If it was already completed on a prior call we still want to return the
+    # latest user snapshot so the client can flip to Plus.
+    if not fresh_user and new_status == "completed":
         fresh_user = await db.users.find_one(
             {"id": current_user["id"]}, {"_id": 0, "hashed_password": 0}
         )
@@ -561,6 +599,119 @@ async def verify_checkout(
         "plus_expires_at": expires_at.isoformat() if expires_at else None,
         "user": _public_user(fresh_user) if fresh_user else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Ziina webhook receiver (payment_intent.status.updated)
+# ---------------------------------------------------------------------------
+def _verify_ziina_signature(raw_body: bytes, signature: Optional[str]) -> bool:
+    if not ZIINA_WEBHOOK_SECRET:
+        # No secret configured → accept but log. Registering the webhook
+        # WITH a secret in Ziina's dashboard is strongly recommended.
+        logger.warning("Ziina webhook received but ZIINA_WEBHOOK_SECRET is empty.")
+        return True
+    if not signature:
+        return False
+    expected = hmac.new(
+        ZIINA_WEBHOOK_SECRET.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature.strip())
+
+
+@api_router.post("/billing/webhook")
+async def ziina_webhook(request: Request):
+    raw = await request.body()
+    signature = request.headers.get("X-Hmac-Signature") or request.headers.get(
+        "x-hmac-signature"
+    )
+    if not _verify_ziina_signature(raw, signature):
+        logger.warning("Ziina webhook rejected: bad signature")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    try:
+        event = json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    event_type = event.get("event_type") or event.get("event") or event.get("type")
+    data = event.get("data") or event.get("payment_intent") or {}
+    intent_id = data.get("id") or event.get("payment_intent_id")
+    intent_status = data.get("status") or event.get("status")
+
+    logger.info(
+        "Ziina webhook: type=%s intent=%s status=%s",
+        event_type,
+        intent_id,
+        intent_status,
+    )
+
+    # Persist every event for debugging + auditing.
+    await db.webhook_events.insert_one(
+        {
+            "id": str(uuid.uuid4()),
+            "provider": "ziina",
+            "event_type": event_type,
+            "intent_id": intent_id,
+            "intent_status": intent_status,
+            "received_at": datetime.now(timezone.utc),
+            "raw": event,
+        }
+    )
+
+    if not intent_id or not intent_status:
+        return {"received": True, "applied": False, "reason": "missing_fields"}
+
+    activated, _expires, _user = await _apply_intent_status(
+        intent_id, intent_status, source="webhook"
+    )
+    return {
+        "received": True,
+        "intent_id": intent_id,
+        "status": intent_status,
+        "activated": activated,
+    }
+
+
+class WebhookRegisterRequest(BaseModel):
+    url: str
+    events: Optional[list[str]] = None
+
+
+@api_router.post("/billing/webhook/register")
+async def register_webhook(
+    body: WebhookRegisterRequest, current_user: dict = Depends(get_current_user)
+):
+    """One-shot helper (superuser only) that registers this backend's
+    webhook URL with Ziina using the current `ZIINA_WEBHOOK_SECRET`."""
+    if not current_user.get("is_superuser"):
+        raise HTTPException(status_code=403, detail="Superuser required.")
+    if not ZIINA_API_KEY:
+        raise HTTPException(status_code=503, detail="Ziina API key not configured.")
+    if not ZIINA_WEBHOOK_SECRET:
+        raise HTTPException(
+            status_code=400,
+            detail="Set ZIINA_WEBHOOK_SECRET in the backend .env before registering.",
+        )
+
+    payload = {
+        "url": body.url,
+        "secret": ZIINA_WEBHOOK_SECRET,
+        "events": body.events or ["payment_intent.status.updated"],
+    }
+    headers = {
+        "Authorization": f"Bearer {ZIINA_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.post(f"{ZIINA_API_BASE}/webhook", json=payload, headers=headers)
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ziina webhook registration failed ({resp.status_code}): {resp.text}",
+        )
+    return {"registered": True, "ziina_response": resp.json()}
 
 
 # ---------------------------------------------------------------------------

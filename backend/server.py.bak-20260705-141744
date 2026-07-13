@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -117,14 +117,23 @@ class AuthResponse(BaseModel):
     user: dict[str, Any]
 
 
+class UserPublic(BaseModel):
+    id: str
+    email: EmailStr
+    display_name: Optional[str] = None
+    is_superuser: bool = False
+    plan: str = "free"  # "free" or "plus"
+    created_at: datetime
+
+
 SHIFT_TYPES = {"day", "night", "on_call", "off"}
 
 
 class ShiftCreate(BaseModel):
     date: str  # YYYY-MM-DD
     type: str
-    start_time: Optional[str] = None
-    end_time: Optional[str] = None
+    start_time: Optional[str] = None  # "07:00"
+    end_time: Optional[str] = None  # "19:00"
     location: Optional[str] = None
     note: Optional[str] = None
     is_draft: bool = True
@@ -139,6 +148,20 @@ class ShiftUpdate(BaseModel):
     is_draft: Optional[bool] = None
 
 
+class Shift(BaseModel):
+    id: str
+    user_id: str
+    date: str
+    type: str
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    location: Optional[str] = None
+    note: Optional[str] = None
+    is_draft: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
 class ExportRequest(BaseModel):
     month: str  # "YYYY-MM"
     include_confirmed: bool = False
@@ -146,7 +169,7 @@ class ExportRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Lifespan + seed
+# App + Lifespan
 # ---------------------------------------------------------------------------
 async def seed_superuser() -> None:
     await db.users.create_index("email", unique=True)
@@ -169,6 +192,7 @@ async def seed_superuser() -> None:
         await db.users.insert_one(user_doc)
         logger.info("Seeded superuser %s", SUPERUSER_EMAIL)
     else:
+        # ensure superuser flag & password stay in sync with env
         await db.users.update_one(
             {"_id": existing["_id"]},
             {
@@ -191,13 +215,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Foxory Shift Calendar API", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 api_router = APIRouter(prefix="/api")
 
 
@@ -290,14 +307,6 @@ def _validate_date(d: str) -> None:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
 
 
-def _serialize_shift(doc: dict[str, Any]) -> dict[str, Any]:
-    out = {k: v for k, v in doc.items() if k != "_id"}
-    for k in ("created_at", "updated_at"):
-        if isinstance(out.get(k), datetime):
-            out[k] = out[k].isoformat()
-    return out
-
-
 @api_router.post("/shifts")
 async def create_shift(body: ShiftCreate, current_user: dict = Depends(get_current_user)):
     _validate_shift_type(body.type)
@@ -316,8 +325,11 @@ async def create_shift(body: ShiftCreate, current_user: dict = Depends(get_curre
         "created_at": now,
         "updated_at": now,
     }
-    await db.shifts.insert_one(dict(doc))
-    return _serialize_shift(doc)
+    await db.shifts.insert_one(doc)
+    doc.pop("_id", None)
+    doc["created_at"] = doc["created_at"].isoformat()
+    doc["updated_at"] = doc["updated_at"].isoformat()
+    return doc
 
 
 @api_router.get("/shifts")
@@ -328,6 +340,7 @@ async def list_shifts(
 ):
     query: dict[str, Any] = {"user_id": current_user["id"]}
     if month:
+        # month = "YYYY-MM"
         try:
             datetime.strptime(month, "%Y-%m")
         except ValueError:
@@ -337,7 +350,11 @@ async def list_shifts(
         query["is_draft"] = is_draft
     cursor = db.shifts.find(query, {"_id": 0}).sort("date", 1)
     items = await cursor.to_list(length=500)
-    return [_serialize_shift(it) for it in items]
+    for it in items:
+        for k in ("created_at", "updated_at"):
+            if isinstance(it.get(k), datetime):
+                it[k] = it[k].isoformat()
+    return items
 
 
 @api_router.patch("/shifts/{shift_id}")
@@ -358,7 +375,10 @@ async def update_shift(
     )
     if not result:
         raise HTTPException(status_code=404, detail="Shift not found")
-    return _serialize_shift(result)
+    for k in ("created_at", "updated_at"):
+        if isinstance(result.get(k), datetime):
+            result[k] = result[k].isoformat()
+    return result
 
 
 @api_router.delete("/shifts/{shift_id}")
@@ -379,7 +399,10 @@ async def confirm_shift(shift_id: str, current_user: dict = Depends(get_current_
     )
     if not result:
         raise HTTPException(status_code=404, detail="Shift not found")
-    return _serialize_shift(result)
+    for k in ("created_at", "updated_at"):
+        if isinstance(result.get(k), datetime):
+            result[k] = result[k].isoformat()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +427,7 @@ async def _fetch_shifts_for_export(user_id: str, month: str, include_confirmed: 
 def _build_xlsx(user: dict, month: str, shifts: list[dict]) -> bytes:
     wb = Workbook()
 
+    # Sheet 1 — Plan Summary
     summary = wb.active
     summary.title = "Plan Summary"
 
@@ -423,11 +447,12 @@ def _build_xlsx(user: dict, month: str, shifts: list[dict]) -> bytes:
         ("Export Type", "Draft Planner Export"),
         ("Month", month),
         ("User", user.get("email", "")),
-        ("Plan", str(user.get("plan", "free")).upper()),
+        ("Plan", user.get("plan", "free").upper()),
         ("Generated At", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
         ("Total Shifts", str(len(shifts))),
     ]
 
+    # Title row
     summary["A1"] = "Foxory Shift Calendar"
     summary["A1"].font = accent_font
     summary["A1"].fill = brand_fill
@@ -444,7 +469,11 @@ def _build_xlsx(user: dict, month: str, shifts: list[dict]) -> bytes:
         cell_b.alignment = Alignment(horizontal="left")
 
     disclaimer_row = 3 + len(rows) + 1
-    d_cell_a = summary.cell(row=disclaimer_row, column=1, value="Reminder")
+    d_cell_a = summary.cell(
+        row=disclaimer_row,
+        column=1,
+        value="Reminder",
+    )
     d_cell_b = summary.cell(
         row=disclaimer_row,
         column=2,
@@ -457,15 +486,15 @@ def _build_xlsx(user: dict, month: str, shifts: list[dict]) -> bytes:
     d_cell_b.alignment = Alignment(horizontal="left", wrap_text=True)
 
     signature_row = disclaimer_row + 2
-    sig_cell = summary.cell(row=signature_row, column=1, value="Created by Foxory.net")
-    sig_cell.font = Font(name="Calibri", size=9, italic=True, color="64748B")
-    summary.merge_cells(
-        start_row=signature_row,
-        start_column=1,
-        end_row=signature_row,
-        end_column=2,
+    sig_cell = summary.cell(
+        row=signature_row,
+        column=1,
+        value="Created by Foxory.net",
     )
+    sig_cell.font = Font(name="Calibri", size=9, italic=True, color="64748B")
+    summary.merge_cells(start_row=signature_row, start_column=1, end_row=signature_row, end_column=2)
 
+    # Sheet 2 — Shift Details
     detail = wb.create_sheet("Shift Details")
     headers = ["Date", "Day", "Type", "Start", "End", "Location", "Note", "Status"]
     for col, h in enumerate(headers, start=1):
@@ -570,4 +599,14 @@ async def export_email(body: ExportRequest, current_user: dict = Depends(get_cur
     }
 
 
+# ---------------------------------------------------------------------------
+# Mount
+# ---------------------------------------------------------------------------
 app.include_router(api_router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

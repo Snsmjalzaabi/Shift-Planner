@@ -1,0 +1,182 @@
+export const BACKEND_URL =
+  process.env.EXPO_PUBLIC_BACKEND_URL || "";
+
+export const API_BASE = `${BACKEND_URL}/api`;
+
+export type AuthUser = {
+  id: string;
+  email: string;
+  display_name?: string | null;
+  is_superuser: boolean;
+  plan: "free" | "plus" | string;
+  created_at: string;
+};
+
+export type Shift = {
+  id: string;
+  user_id: string;
+  date: string;
+  type: "day" | "night" | "on_call" | "off";
+  start_time?: string | null;
+  end_time?: string | null;
+  location?: string | null;
+  note?: string | null;
+  is_draft: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LoginResponse = {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+};
+
+async function request<T>(
+  path: string,
+  init: RequestInit & { token?: string | null } = {},
+): Promise<T> {
+  const { token, headers, ...rest } = init;
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...rest,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(headers || {}),
+    },
+  });
+  if (!res.ok) {
+    let detail = `Request failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.detail) {
+        detail =
+          typeof body.detail === "string"
+            ? body.detail
+            : JSON.stringify(body.detail);
+      }
+    } catch {
+      // ignore
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as T;
+}
+
+export const api = {
+  login: (email: string, password: string) =>
+    request<LoginResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+
+  register: (email: string, password: string, display_name?: string) =>
+    request<LoginResponse>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password, display_name }),
+    }),
+
+  me: (token: string) => request<AuthUser>("/auth/me", { token }),
+
+  branding: () =>
+    request<{
+      app_name: string;
+      subtitle: string;
+      created_by: string;
+      created_by_url: string;
+      creator_signature: string;
+    }>("/branding"),
+
+  listShifts: (token: string, month?: string, isDraft?: boolean) => {
+    const params = new URLSearchParams();
+    if (month) params.set("month", month);
+    if (isDraft !== undefined) params.set("is_draft", String(isDraft));
+    const q = params.toString();
+    return request<Shift[]>(`/shifts${q ? `?${q}` : ""}`, { token });
+  },
+
+  createShift: (
+    token: string,
+    body: {
+      date: string;
+      type: string;
+      start_time?: string | null;
+      end_time?: string | null;
+      location?: string | null;
+      note?: string | null;
+      is_draft?: boolean;
+    },
+  ) =>
+    request<Shift>("/shifts", {
+      method: "POST",
+      body: JSON.stringify(body),
+      token,
+    }),
+
+  updateShift: (
+    token: string,
+    id: string,
+    body: Partial<{
+      type: string;
+      start_time: string | null;
+      end_time: string | null;
+      location: string | null;
+      note: string | null;
+      is_draft: boolean;
+    }>,
+  ) =>
+    request<Shift>(`/shifts/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      token,
+    }),
+
+  deleteShift: (token: string, id: string) =>
+    request<{ deleted: boolean }>(`/shifts/${id}`, {
+      method: "DELETE",
+      token,
+    }),
+
+  confirmShift: (token: string, id: string) =>
+    request<Shift>(`/shifts/${id}/confirm`, {
+      method: "POST",
+      token,
+    }),
+
+  exportXlsx: (
+    token: string,
+    body: { month: string; include_confirmed?: boolean },
+  ) =>
+    request<{
+      filename: string;
+      content_type: string;
+      base64: string;
+      size_bytes: number;
+      shift_count: number;
+      created_by: string;
+    }>("/export/xlsx", {
+      method: "POST",
+      body: JSON.stringify(body),
+      token,
+    }),
+
+  exportEmail: (
+    token: string,
+    body: {
+      month: string;
+      include_confirmed?: boolean;
+      email_to?: string;
+    },
+  ) =>
+    request<{
+      to: string;
+      subject: string;
+      body: string;
+      shift_count: number;
+      signature: string;
+    }>("/export/email", {
+      method: "POST",
+      body: JSON.stringify(body),
+      token,
+    }),
+};

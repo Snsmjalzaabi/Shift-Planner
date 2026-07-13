@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.nurseplanner.eux5ot"
+      "bundleIdentifier": "com.foxory.shiftcalendar"
     },
     "android": {
       "adaptiveIcon": {
@@ -18,7 +18,7 @@
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.emergent.nurseplanner.eux5ot"
+      "package": "com.foxory.shiftcalendar"
     },
     "web": {
       "bundler": "metro",

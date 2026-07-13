@@ -293,6 +293,82 @@ async def me(current_user: dict = Depends(get_current_user)):
     return _public_user(current_user)
 
 
+def _require_plus(user: dict[str, Any]) -> None:
+    if user.get("plan") != "plus" and not user.get("is_superuser"):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "plus_required",
+                "message": "This feature is available on the Plus $2.99/year plan.",
+            },
+        )
+
+
+def _current_month_str() -> str:
+    d = datetime.now(timezone.utc)
+    return f"{d.year:04d}-{d.month:02d}"
+
+
+def _require_current_month_or_plus(user: dict[str, Any], iso_date: str) -> None:
+    """Free users can only touch shifts in the current calendar month."""
+    if user.get("plan") == "plus" or user.get("is_superuser"):
+        return
+    if not iso_date.startswith(_current_month_str() + "-"):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "code": "plus_required",
+                "message": (
+                    "Multi-month planning is a Plus feature. "
+                    "Upgrade to plan shifts outside the current month."
+                ),
+            },
+        )
+
+
+class PlanUpdate(BaseModel):
+    plan: str = Field(pattern="^(free|plus)$")
+
+
+@api_router.post("/auth/plan")
+async def update_plan(
+    body: PlanUpdate, current_user: dict = Depends(get_current_user)
+):
+    """Mock plan activation. Payments are disabled for now — tapping
+    Upgrade in Settings simply flips the flag. Real Stripe integration
+    can replace this endpoint later."""
+    now = datetime.now(timezone.utc)
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {"plan": body.plan, "updated_at": now}},
+    )
+    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0, "hashed_password": 0})
+    return _public_user(fresh)
+
+
+@api_router.get("/billing/config")
+async def billing_config():
+    return {
+        "provider": None,
+        "plans": [
+            {
+                "id": "plus_yearly",
+                "name": "Foxory Plus",
+                "price_display": "$2.99/year",
+                "period": "year",
+                "features": [
+                    "XLSX export with Plan Summary + Shift Details",
+                    "Attach XLSX to email exports",
+                    "Send real emails via SendGrid",
+                    "Multi-month planning (any past/future month)",
+                    "Priority support",
+                ],
+            }
+        ],
+        "note": "Payments coming soon — activate instantly with your promo access.",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Routes: Shifts
 # ---------------------------------------------------------------------------

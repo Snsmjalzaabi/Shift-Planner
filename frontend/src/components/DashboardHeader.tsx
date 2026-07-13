@@ -18,7 +18,15 @@ export function DashboardHeader({ showBack, title }: Props) {
   const router = useRouter();
 
   const plan = user?.plan === "plus" ? "plus" : "free";
-  const badgeLabel = plan === "plus" ? "Plus $2.99/year" : "CCAD Free Access";
+  const source = (user?.plan_source as string) || (plan === "plus" ? "paid" : "free");
+  const badgeLabel =
+    source === "ccad"
+      ? "CCAD Free Access"
+      : source === "paid"
+      ? "Plus $2.99/year"
+      : "Foxory Free";
+  const badgeVariant: "plus" | "free" | "ccad" =
+    source === "ccad" ? "ccad" : plan === "plus" ? "plus" : "free";
 
   return (
     <View
@@ -55,22 +63,42 @@ export function DashboardHeader({ showBack, title }: Props) {
         </View>
 
         <View
-          testID={`account-badge-${plan}`}
+          testID={`account-badge-${badgeVariant}`}
           style={[
             styles.badge,
-            plan === "plus" ? styles.badgePlus : styles.badgeFree,
+            badgeVariant === "plus"
+              ? styles.badgePlus
+              : badgeVariant === "ccad"
+              ? styles.badgeCcad
+              : styles.badgeFree,
           ]}
         >
           <Ionicons
-            name={plan === "plus" ? "sparkles" : "shield-checkmark"}
+            name={
+              badgeVariant === "plus"
+                ? "sparkles"
+                : badgeVariant === "ccad"
+                ? "medical"
+                : "shield-checkmark"
+            }
             size={11}
-            color={plan === "plus" ? colors.neonHover : colors.textAccent}
+            color={
+              badgeVariant === "plus"
+                ? colors.neonHover
+                : badgeVariant === "ccad"
+                ? colors.success
+                : colors.textAccent
+            }
             style={{ marginRight: 4 }}
           />
           <Text
             style={[
               styles.badgeText,
-              plan === "plus" ? styles.badgePlusText : styles.badgeFreeText,
+              badgeVariant === "plus"
+                ? styles.badgePlusText
+                : badgeVariant === "ccad"
+                ? styles.badgeCcadText
+                : styles.badgeFreeText,
             ]}
           >
             {badgeLabel}
@@ -138,6 +166,10 @@ const styles = StyleSheet.create({
     borderColor: colors.neon,
     backgroundColor: "rgba(168, 85, 247, 0.22)",
   },
+  badgeCcad: {
+    borderColor: "rgba(74, 222, 128, 0.45)",
+    backgroundColor: "rgba(74, 222, 128, 0.14)",
+  },
   badgeText: {
     fontSize: 10,
     fontWeight: "800",
@@ -149,5 +181,8 @@ const styles = StyleSheet.create({
   },
   badgePlusText: {
     color: colors.neonHover,
+  },
+  badgeCcadText: {
+    color: colors.success,
   },
 });

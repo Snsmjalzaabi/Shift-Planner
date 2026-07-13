@@ -36,6 +36,7 @@ export default function UpgradeScreen() {
   }>({ kind: "idle" });
 
   const isPlus = user?.plan === "plus";
+  const isCcad = user?.plan_source === "ccad";
 
   useEffect(() => {
     (async () => {
@@ -276,9 +277,15 @@ export default function UpgradeScreen() {
 
         {isPlus && (
           <View style={styles.plusCard} testID="already-plus">
-            <Ionicons name="ribbon" size={18} color={colors.neonHover} />
+            <Ionicons
+              name={isCcad ? "medical" : "ribbon"}
+              size={18}
+              color={isCcad ? colors.success : colors.neonHover}
+            />
             <Text style={styles.plusText}>
-              All features unlocked. Enjoy the calendar.
+              {isCcad
+                ? "CCAD Free Access — all Plus features are already unlocked at no charge."
+                : "All features unlocked. Enjoy the calendar."}
             </Text>
           </View>
         )}

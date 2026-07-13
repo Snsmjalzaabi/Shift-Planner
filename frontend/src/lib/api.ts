@@ -7,6 +7,7 @@ export type AuthUser = {
   display_name?: string | null;
   is_superuser: boolean;
   plan: "free" | "plus" | string;
+  plan_source?: "free" | "ccad" | "paid" | string;
   created_at: string;
   plus_expires_at?: string | null;
 };

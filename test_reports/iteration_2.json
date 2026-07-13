@@ -1,0 +1,57 @@
+{
+  "summary": "CCAD auto-Plus + P3 security hardening fully verified. 17/17 new cases in test_ccad_and_p3.py pass and 11/11 pre-existing cases in backend_test.py pass — 28/28 overall. CCAD-1..CCAD-8, P3-1..P3-5, Regression 1..3 all green. No production code modified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_ccad_and_p3.py",
+    "/app/backend/tests/test_security_audit.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_ccad_p3.xml",
+    "/app/test_reports/pytest/pytest_regression.xml"
+  ],
+  "verification_details": {
+    "CCAD-1_ccad_ae_register": "PASS - register with @ccad.ae -> user.plan=plus, plan_source=ccad.",
+    "CCAD-2_clevelandclinicabudhabi_register": "PASS - same behaviour with @clevelandclinicabudhabi.ae.",
+    "CCAD-3_non_ccad_stays_free": "PASS - @gmail.com register -> plan=free, plan_source=free.",
+    "CCAD-4_ccad_export_xlsx_200": "PASS - CCAD user gets 200 with base64 payload on /api/export/xlsx.",
+    "CCAD-5_ccad_future_month_shift": "PASS - CCAD user can POST /api/shifts with date=2099-12-15 (multi-month gate bypassed).",
+    "CCAD-6_non_ccad_402_plus_required": "PASS - free @gmail.com user -> 402 detail.code='plus_required' on /api/export/xlsx.",
+    "CCAD-7_me_returns_plus_ccad": "PASS - GET /api/auth/me for CCAD user returns plan=plus, plan_source=ccad.",
+    "CCAD-8_login_upgrades_existing_free_ccad": "PASS - direct-Mongo insert of nurse-with-CCAD-email as free -> POST /api/auth/login returns user with plan=plus, plan_source=ccad AND the DB doc is also updated (idempotent upgrade path exercised).",
+    "P3-1_login_rate_limit_429": "PASS - 11th rapid /api/auth/login within a minute returns 429 with 'Too many requests...'.",
+    "P3-2_register_rate_limit_429": "PASS - 6th rapid /api/auth/register within a minute returns 429 with 'Too many requests...'.",
+    "P3-3_cors_lockdown": "PASS (against app on internal port 8001) - OPTIONS from https://evil.example.com returns 400 with NO Access-Control-Allow-Origin header; OPTIONS from http://localhost:8081 (in ALLOWED_ORIGINS) returns 200 with 'Access-Control-Allow-Origin: http://localhost:8081' and 'Access-Control-Allow-Credentials: true'. NOTE: the K8s preview ingress at the public host rewrites CORS on OPTIONS and returns '*' regardless — this is a preview-environment artefact, not a server.py bug. In production behind foxory.net the app-level lockdown is what applies.",
+    "P3-4_neutral_register_error": "PASS - POST /api/auth/register with existing email Sultan942002@yahoo.com -> 400 with detail 'Registration could not be completed. Please try again or sign in.'; no 'Email already registered' leakage.",
+    "P3-5_no_ziina_rejected_leak": "PASS - grep of /app/backend/server.py returns 0 matches for 'Ziina rejected'; only 'Checkout provider is unavailable...' and 'Webhook provider is unavailable...' remain.",
+    "Regression_1_pre_existing_pytest": "PASS - all 11 tests in /app/backend/tests/backend_test.py pass (branding, auth, me, register, invalid-login, shifts CRUD, invalid-type, export xlsx, export email, invalid month, unauthorized shifts).",
+    "Regression_2_non_ccad_live_ziina_redirect": "PASS - fresh @gmail.com free user's /api/billing/checkout returns real https redirect_url + payment_intent_id.",
+    "Regression_3_webhook_hmac_and_activation": "PASS - (a) missing/garbage signature -> 401; (b) valid HMAC-SHA256 (with ZIINA_WEBHOOK_SECRET from .env) + status=completed on a real payment_intent_id from step 2 -> 200 with received:true, activated:true; user's /api/auth/me flips to plan=plus, plan_source='paid'; (c) replay same event -> 200 with activated:false (idempotent)."
+  },
+  "environmental_notes": [
+    "K8s preview ingress on https://nurse-planner-5.preview.emergentagent.com strips FastAPI CORS headers on preflight OPTIONS and returns 'Access-Control-Allow-Origin: *' plus 'Access-Control-Allow-Credentials: true' for every origin. The app itself (verified via http://localhost:8001) correctly implements strict origin allow-listing per ALLOWED_ORIGINS. This is an environment/ingress artefact, not a server.py issue.",
+    "Rate-limit buckets are in-process; the tests use a unique X-Forwarded-For per request (the app's _client_ip trusts XFF's first token) to run functional tests without eating the limiter. The P3-1/P3-2 tests deliberately omit XFF so they share a bucket and can trigger 429."
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1357 lines — still above the recommended 700-line split threshold. Suggest modularising into routers (auth, billing, shifts, export, admin) at the next available opportunity.",
+    "_client_ip trusts X-Forwarded-For unconditionally (first token). Behind a single trusted ingress this is safe; if the app is ever exposed directly, XFF spoofing would let an attacker bypass rate-limits. Consider validating XFF only when a shared 'PROXY_TRUSTED=1' flag is set, or use the last hop.",
+    "In-process rate-limiter is per-worker; with more than one uvicorn worker or multiple replicas the effective limit multiplies. Redis-backed limiter recommended before scaling."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_ccad_and_p3.py (new - 17 test cases: 8 CCAD + 5 P3 + 4 regression)"
+  ],
+  "success_rate": {"backend": "100% (28/28: 17 new + 11 pre-existing)", "frontend": "not tested (per request: backend only)"},
+  "seed_data_creation": "Test users created inline with TEST_ prefix and unique UUID suffix; CCAD-8's direct-Mongo user is cleaned up in its own finally block. Other users are left in place (non-destructive, register-only).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The new test file /app/backend/tests/test_ccad_and_p3.py is fully reusable — it restarts nothing on its own, but the two rate-limit tests DO burn per-IP buckets. If you re-run and want a clean slate, `sudo supervisorctl restart backend` between iterations. All other tests set unique X-Forwarded-For headers so they never trip the limiter. To run everything green in one command: `supervisorctl restart backend && pytest backend/tests/test_ccad_and_p3.py backend/tests/backend_test.py backend/tests/test_security_audit.py -v`.",
+  "rca_of_issue": "N/A — verification pass, no production bugs. Two test-authoring bumps encountered and fixed inline: (1) rate-limit buckets are per-IP, so functional tests must set unique X-Forwarded-For to avoid the same bucket the RL tests fill; (2) app stores email lower-cased but login queries case-sensitively, so the CCAD-8 direct-Mongo test must POST /auth/login with email.lower() to match the inserted document."
+}

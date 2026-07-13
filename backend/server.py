@@ -77,6 +77,30 @@ PLUS_DURATION_DAYS = 365
 # SEC-004: per-user daily send quota for real email delivery.
 EMAIL_SEND_DAILY_QUOTA = int(os.environ.get("EMAIL_SEND_DAILY_QUOTA", "30"))
 
+# CORS lockdown (P3): explicit allowlist, no wildcard.
+_default_origins = "http://localhost:8081,http://localhost:19006,http://localhost:3000"
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",")
+    if o.strip()
+]
+
+# CCAD free access: users whose email ends in one of these domains get Plus
+# automatically at no charge, badged as "CCAD FREE ACCESS".
+CCAD_EMAIL_DOMAINS = tuple(
+    d.strip().lower()
+    for d in os.environ.get(
+        "CCAD_EMAIL_DOMAINS",
+        "ccad.ae,clevelandclinicabudhabi.ae",
+    ).split(",")
+    if d.strip()
+)
+
+
+def _is_ccad_email(email: str) -> bool:
+    e = (email or "").strip().lower()
+    return any(e.endswith("@" + d) for d in CCAD_EMAIL_DOMAINS)
+
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
@@ -85,6 +109,45 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("foxory")
+
+
+def _client_ip(request: Request) -> str:
+    """Rate-limit key that respects the ingress-proxy X-Forwarded-For header."""
+    xff = request.headers.get("x-forwarded-for") or request.headers.get(
+        "X-Forwarded-For"
+    )
+    if xff:
+        return xff.split(",")[0].strip()
+    return (request.client.host if request.client else "unknown") or "unknown"
+
+
+# Simple in-process sliding-window rate limiter (per-process; one uvicorn
+# worker per container). Fine for the MVP; swap in Redis-backed if needed.
+_rate_buckets: dict[str, list[float]] = {}
+
+
+def make_rate_limiter(*, name: str, per_minute: int, per_hour: int):
+    async def _dep(request: Request) -> None:
+        import time as _time
+
+        now = _time.time()
+        key = f"{name}:{_client_ip(request)}"
+        window_hour = now - 3600.0
+        hits = [t for t in _rate_buckets.get(key, []) if t >= window_hour]
+        _rate_buckets[key] = hits
+        recent_minute = sum(1 for t in hits if t >= now - 60.0)
+        if recent_minute >= per_minute or len(hits) >= per_hour:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please slow down and try again shortly.",
+            )
+        hits.append(now)
+
+    return _dep
+
+
+rate_limit_login = make_rate_limiter(name="login", per_minute=10, per_hour=60)
+rate_limit_register = make_rate_limiter(name="register", per_minute=5, per_hour=30)
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +301,9 @@ app = FastAPI(title="Foxory Shift Calendar API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Hmac-Signature"],
 )
 api_router = APIRouter(prefix="/api")
 
@@ -279,6 +342,7 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "display_name": user.get("display_name"),
         "is_superuser": user.get("is_superuser", False),
         "plan": user.get("plan", "free"),
+        "plan_source": user.get("plan_source", "free"),
         "created_at": user["created_at"].isoformat()
         if isinstance(user["created_at"], datetime)
         else user["created_at"],
@@ -286,19 +350,59 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@api_router.post("/auth/register", response_model=AuthResponse)
+async def _apply_ccad_upgrade_if_needed(user_doc: dict[str, Any]) -> dict[str, Any]:
+    """Idempotently grant Plus (as `plan_source='ccad'`) to CCAD accounts.
+    Never downgrades — a user who already paid stays on `paid`."""
+    if not _is_ccad_email(user_doc.get("email", "")):
+        return user_doc
+    if user_doc.get("plan_source") == "ccad" and user_doc.get("plan") == "plus":
+        return user_doc
+    if user_doc.get("plan_source") == "paid":
+        return user_doc  # they already paid — keep the paid tag
+    now = datetime.now(timezone.utc)
+    await db.users.update_one(
+        {"id": user_doc["id"]},
+        {
+            "$set": {
+                "plan": "plus",
+                "plan_source": "ccad",
+                "plus_activated_at": user_doc.get("plus_activated_at") or now,
+                "updated_at": now,
+            }
+        },
+    )
+    user_doc["plan"] = "plus"
+    user_doc["plan_source"] = "ccad"
+    logger.info("CCAD auto-upgrade applied to %s", user_doc["email"])
+    return user_doc
+
+
+@api_router.post(
+    "/auth/register",
+    response_model=AuthResponse,
+    dependencies=[Depends(rate_limit_register)],
+)
 async def register(body: RegisterRequest):
     existing = await db.users.find_one({"email": body.email})
     if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        # P3: neutral message; do not confirm/deny account existence.
+        raise HTTPException(
+            status_code=400,
+            detail="Registration could not be completed. Please try again or sign in.",
+        )
     now = datetime.now(timezone.utc)
+    ccad = _is_ccad_email(body.email)
+    plan = "plus" if ccad else "free"
+    plan_source = "ccad" if ccad else "free"
     user_doc = {
         "id": str(uuid.uuid4()),
         "email": body.email,
         "display_name": body.display_name or body.email.split("@")[0],
         "hashed_password": hash_password(body.password),
         "is_superuser": False,
-        "plan": "free",
+        "plan": plan,
+        "plan_source": plan_source,
+        "plus_activated_at": now if ccad else None,
         "created_at": now,
         "updated_at": now,
     }
@@ -307,11 +411,18 @@ async def register(body: RegisterRequest):
     return {"access_token": token, "token_type": "bearer", "user": _public_user(user_doc)}
 
 
-@api_router.post("/auth/login", response_model=AuthResponse)
+@api_router.post(
+    "/auth/login",
+    response_model=AuthResponse,
+    dependencies=[Depends(rate_limit_login)],
+)
 async def login(body: LoginRequest):
     user = await db.users.find_one({"email": body.email})
     if not user or not verify_password(body.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    # Idempotently apply CCAD upgrade on every login so a paid-then-CCAD flip
+    # (or a domain policy change) takes effect without manual DB work.
+    user = await _apply_ccad_upgrade_if_needed(user)
     token = create_access_token(user["id"], {"email": user["email"]})
     return {"access_token": token, "token_type": "bearer", "user": _public_user(user)}
 
@@ -466,7 +577,7 @@ async def create_checkout(
         logger.error("Ziina checkout failed: %s %s", resp.status_code, resp.text)
         raise HTTPException(
             status_code=502,
-            detail=f"Ziina rejected the request ({resp.status_code}): {resp.text}",
+            detail="Checkout provider is unavailable. Please try again in a moment.",
         )
 
     data = resp.json()
@@ -513,9 +624,10 @@ async def _fetch_ziina_intent(intent_id: str) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=20.0) as http:
         resp = await http.get(f"{ZIINA_API_BASE}/payment_intent/{intent_id}", headers=headers)
     if resp.status_code >= 400:
+        logger.error("Ziina intent GET failed: %s %s", resp.status_code, resp.text)
         raise HTTPException(
             status_code=502,
-            detail=f"Ziina rejected the status check ({resp.status_code}): {resp.text}",
+            detail="Checkout provider is unavailable. Please try again in a moment.",
         )
     return resp.json()
 
@@ -553,6 +665,7 @@ async def _apply_intent_status(
             {
                 "$set": {
                     "plan": "plus",
+                    "plan_source": "paid",
                     "plus_expires_at": expires_at,
                     "plus_activated_at": now,
                     "updated_at": now,
@@ -720,9 +833,12 @@ async def register_webhook(
     async with httpx.AsyncClient(timeout=20.0) as http:
         resp = await http.post(f"{ZIINA_API_BASE}/webhook", json=payload, headers=headers)
     if resp.status_code >= 400:
+        logger.error(
+            "Ziina webhook registration failed: %s %s", resp.status_code, resp.text
+        )
         raise HTTPException(
             status_code=502,
-            detail=f"Ziina webhook registration failed ({resp.status_code}): {resp.text}",
+            detail="Webhook provider is unavailable. Please try again in a moment.",
         )
     return {"registered": True, "ziina_response": resp.json()}
 

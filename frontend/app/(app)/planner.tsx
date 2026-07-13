@@ -24,6 +24,7 @@ import { api, isPlusRequired, Shift } from "@/src/lib/api";
 import { colors, radius, shiftTheme, spacing } from "@/src/theme/colors";
 import { currentMonthKey, monthLabel, shiftDateDisplay } from "@/src/utils/dateUtils";
 import { saveAndShareXlsx } from "@/src/utils/downloadXlsx";
+import { openDraftPlanMail } from "@/src/utils/mailComposer";
 
 type Filter = "all" | "draft" | "confirmed";
 
@@ -43,6 +44,7 @@ export default function PlannerScreen() {
     to: string;
     subject: string;
     body: string;
+    html: string;
   } | null>(null);
   const [xlsxResult, setXlsxResult] = useState<{
     filename: string;
@@ -53,15 +55,12 @@ export default function PlannerScreen() {
   const [xlsxError, setXlsxError] = useState<string | null>(null);
   const [copied, setCopied] = useState<"body" | "subject" | null>(null);
 
-  // email compose state (inside preview modal)
-  const [recipient, setRecipient] = useState<string>("");
+  // Mail-composer state
   const [attachXlsx, setAttachXlsx] = useState<boolean>(true);
-  const [sending, setSending] = useState<boolean>(false);
-  const [sendStatus, setSendStatus] = useState<{
-    delivered: boolean;
-    provider: string | null;
-    error: string | null;
-    sendgrid_configured: boolean;
+  const [opening, setOpening] = useState<boolean>(false);
+  const [mailStatus, setMailStatus] = useState<{
+    kind: "sent" | "saved" | "cancelled" | "clipboard" | "error";
+    message: string;
   } | null>(null);
 
   const [y, m] = month.split("-").map(Number);
@@ -150,19 +149,17 @@ export default function PlannerScreen() {
     if (!token) return;
     setExportingEmail(true);
     setEmailPreview(null);
-    setSendStatus(null);
+    setMailStatus(null);
     try {
       const res = await api.exportEmail(token, {
         month,
         include_confirmed: filter === "all",
       });
-      setEmailPreview({ to: res.to, subject: res.subject, body: res.body });
-      setRecipient(res.to);
-      setSendStatus({
-        delivered: false,
-        provider: null,
-        error: null,
-        sendgrid_configured: res.sendgrid_configured,
+      setEmailPreview({
+        to: res.to,
+        subject: res.subject,
+        body: res.body,
+        html: res.html,
       });
     } catch {
       // ignore
@@ -171,43 +168,78 @@ export default function PlannerScreen() {
     }
   };
 
-  const doSendEmail = async () => {
-    if (!token) return;
-    if (!isPlus) {
-      router.push("/(app)/upgrade");
-      return;
-    }
-    setSending(true);
+  const doOpenMail = async () => {
+    if (!token || !emailPreview) return;
+    setOpening(true);
+    setMailStatus(null);
     try {
-      const res = await api.exportEmail(token, {
-        month,
-        include_confirmed: filter === "all",
-        email_to: recipient || undefined,
-        send: true,
-        attach_xlsx: attachXlsx,
+      let xlsxBase64: string | null = null;
+      let xlsxFilename: string | undefined;
+
+      if (attachXlsx && isPlus) {
+        try {
+          const xlsx = await api.exportXlsx(token, {
+            month,
+            include_confirmed: filter === "all",
+          });
+          xlsxBase64 = xlsx.base64;
+          xlsxFilename = xlsx.filename;
+        } catch (e: any) {
+          if (isPlusRequired(e)) {
+            setOpening(false);
+            router.push("/(app)/upgrade");
+            return;
+          }
+          // If XLSX generation fails we still open the composer without it.
+          xlsxBase64 = null;
+        }
+      }
+
+      const result = await openDraftPlanMail({
+        to: emailPreview.to,
+        subject: emailPreview.subject,
+        body: emailPreview.body,
+        html: emailPreview.html,
+        xlsxBase64,
+        xlsxFilename,
       });
-      setSendStatus({
-        delivered: res.delivered,
-        provider: res.provider,
-        error: res.delivery_error,
-        sendgrid_configured: res.sendgrid_configured,
-      });
-      if (res.delivered) {
-        setEmailPreview({ to: res.to, subject: res.subject, body: res.body });
+
+      if (!result.ok) {
+        setMailStatus({
+          kind: "error",
+          message: result.error || "Could not open the mail composer.",
+        });
+      } else if (result.method === "clipboard") {
+        setMailStatus({
+          kind: "clipboard",
+          message:
+            "No mail app was available. The subject and body were copied to your clipboard.",
+        });
+      } else if (result.status === "sent") {
+        setMailStatus({ kind: "sent", message: "Email sent from your mail app." });
+      } else if (result.status === "saved") {
+        setMailStatus({
+          kind: "saved",
+          message: "Draft saved in your mail app.",
+        });
+      } else if (result.status === "cancelled") {
+        setMailStatus({
+          kind: "cancelled",
+          message: "You closed the mail app without sending.",
+        });
+      } else {
+        setMailStatus({
+          kind: "sent",
+          message: "Draft opened in your mail app.",
+        });
       }
     } catch (e: any) {
-      if (isPlusRequired(e)) {
-        router.push("/(app)/upgrade");
-        return;
-      }
-      setSendStatus({
-        delivered: false,
-        provider: null,
-        error: e?.message || "Send failed",
-        sendgrid_configured: sendStatus?.sendgrid_configured ?? false,
+      setMailStatus({
+        kind: "error",
+        message: e?.message || "Could not open the mail composer.",
       });
     } finally {
-      setSending(false);
+      setOpening(false);
     }
   };
 
@@ -491,7 +523,7 @@ export default function PlannerScreen() {
                   />
                   <TextInput
                     testID="email-recipient-input"
-                    value={recipient}
+                    value={emailPreview.to}
                     editable={false}
                     style={[styles.recipientInput, { color: colors.textSecondary }]}
                   />
@@ -532,18 +564,29 @@ export default function PlannerScreen() {
 
                 <View style={styles.attachRow}>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.attachTitle}>Attach XLSX workbook</Text>
+                    <Text style={styles.attachTitle}>
+                      Attach XLSX workbook{!isPlus ? " · Plus" : ""}
+                    </Text>
                     <Text style={styles.attachSub}>
-                      Includes Plan Summary + Shift Details sheets.
+                      {isPlus
+                        ? "Includes Plan Summary + Shift Details sheets."
+                        : "Upgrade to attach the XLSX. The composer will still open."}
                     </Text>
                   </View>
                   <Switch
                     testID="attach-xlsx-toggle"
-                    value={attachXlsx}
-                    onValueChange={setAttachXlsx}
+                    value={attachXlsx && isPlus}
+                    onValueChange={(v) => {
+                      if (!isPlus && v) {
+                        router.push("/(app)/upgrade");
+                        return;
+                      }
+                      setAttachXlsx(v);
+                    }}
+                    disabled={!isPlus}
                     thumbColor={
                       Platform.OS === "android"
-                        ? attachXlsx
+                        ? attachXlsx && isPlus
                           ? colors.neonHover
                           : colors.textMuted
                         : undefined
@@ -555,81 +598,68 @@ export default function PlannerScreen() {
                   />
                 </View>
 
-                {sendStatus?.sendgrid_configured === false && (
-                  <View style={styles.warnBox} testID="sendgrid-warn">
-                    <Ionicons
-                      name="warning-outline"
-                      size={14}
-                      color={colors.textAccent}
-                    />
-                    <Text style={styles.warnText}>
-                      SendGrid API key not configured on the backend. Preview
-                      only — set{" "}
-                      <Text style={{ fontFamily: "monospace" }}>
-                        SENDGRID_API_KEY
-                      </Text>{" "}
-                      to send real emails.
-                    </Text>
-                  </View>
-                )}
+                <View style={styles.infoBox} testID="mail-composer-hint">
+                  <Ionicons
+                    name="information-circle"
+                    size={14}
+                    color={colors.textAccent}
+                  />
+                  <Text style={styles.infoText}>
+                    Opens your device&apos;s mail app pre-filled with the draft — the email
+                    is sent from your own address, not through a relay.
+                  </Text>
+                </View>
 
-                {sendStatus?.delivered && (
-                  <View style={styles.successBox} testID="send-success">
+                {mailStatus && (
+                  <View
+                    testID={`mail-status-${mailStatus.kind}`}
+                    style={[
+                      styles.statusBox,
+                      mailStatus.kind === "sent" && styles.statusSuccess,
+                      mailStatus.kind === "saved" && styles.statusSuccess,
+                      mailStatus.kind === "clipboard" && styles.statusPending,
+                      mailStatus.kind === "cancelled" && styles.statusPending,
+                      mailStatus.kind === "error" && styles.statusError,
+                    ]}
+                  >
                     <Ionicons
-                      name="checkmark-circle"
+                      name={
+                        mailStatus.kind === "sent" || mailStatus.kind === "saved"
+                          ? "checkmark-circle"
+                          : mailStatus.kind === "error"
+                          ? "alert-circle"
+                          : "information-circle"
+                      }
                       size={16}
-                      color={colors.success}
+                      color={
+                        mailStatus.kind === "error"
+                          ? colors.danger
+                          : mailStatus.kind === "sent" || mailStatus.kind === "saved"
+                          ? colors.success
+                          : colors.textAccent
+                      }
                     />
-                    <Text style={styles.successText}>
-                      Email delivered via SendGrid to{" "}
-                      <Text style={{ fontWeight: "800" }}>
-                        {emailPreview.to}
-                      </Text>
-                      .
-                    </Text>
+                    <Text style={styles.statusText}>{mailStatus.message}</Text>
                   </View>
                 )}
-
-                {!!sendStatus?.error &&
-                  sendStatus.error !== "no_api_key" &&
-                  !sendStatus.delivered && (
-                    <View style={styles.errorBox} testID="send-error">
-                      <Ionicons
-                        name="alert-circle-outline"
-                        size={14}
-                        color={colors.danger}
-                      />
-                      <Text style={styles.errorText}>
-                        Delivery failed: {sendStatus.error}
-                      </Text>
-                    </View>
-                  )}
 
                 <Pressable
                   testID="send-email-btn"
-                  onPress={doSendEmail}
-                  disabled={sending || !recipient}
+                  onPress={doOpenMail}
+                  disabled={opening}
                   style={({ pressed }) => [
                     styles.sendBtn,
                     pressed && { opacity: 0.85 },
-                    (sending || !recipient) && { opacity: 0.6 },
+                    opening && { opacity: 0.7 },
                   ]}
                 >
-                  {sending ? (
+                  {opening ? (
                     <ActivityIndicator color="#0B0619" />
                   ) : (
                     <>
-                      <Ionicons
-                        name={isPlus ? "send" : "lock-closed"}
-                        size={16}
-                        color="#0B0619"
-                      />
+                      <Ionicons name="mail" size={16} color="#0B0619" />
                       <Text style={styles.sendBtnText}>
-                        {sendStatus?.delivered
-                          ? "Send again"
-                          : isPlus
-                          ? "Send email"
-                          : "Send email · Plus"}
+                        Open in Mail
                       </Text>
                     </>
                   )}
@@ -1181,5 +1211,48 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     fontSize: 15,
     letterSpacing: 0.3,
+  },
+  infoBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+    backgroundColor: "rgba(168, 85, 247, 0.08)",
+    borderColor: "rgba(168, 85, 247, 0.28)",
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  infoText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    flex: 1,
+    lineHeight: 18,
+  },
+  statusBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    marginTop: spacing.md,
+  },
+  statusText: {
+    color: colors.textPrimary,
+    fontSize: 12.5,
+    flex: 1,
+  },
+  statusSuccess: {
+    borderColor: "rgba(74, 222, 128, 0.4)",
+    backgroundColor: "rgba(74, 222, 128, 0.12)",
+  },
+  statusError: {
+    borderColor: "rgba(248, 113, 113, 0.4)",
+    backgroundColor: "rgba(248, 113, 113, 0.12)",
+  },
+  statusPending: {
+    borderColor: "rgba(168, 85, 247, 0.4)",
+    backgroundColor: "rgba(168, 85, 247, 0.10)",
   },
 });

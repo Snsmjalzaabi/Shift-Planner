@@ -1,0 +1,43 @@
+{
+  "summary": "Backend-only verification of the SendGrid → expo-mail-composer migration. Ran the new test_mail_composer.py suite (16 tests) + the existing backend_test.py regression suite (11 tests). 26/27 pass. Single real failure: MC-6 — server.py line 503 still contains the string 'Send real emails via SendGrid' inside the /api/billing/config plan features list. This is stale marketing copy that violates the 'no sendgrid strings in source' requirement and is user-visible on the upgrade screen. MC-1..MC-5 and MC-7 all pass, .env is clean, no sendgrid imports exist. SU-1 confirmed (plan_source='paid'). Regressions 1-6 all pass, including a real Ziina checkout redirect and a real HMAC-signed webhook that idempotently activates Plus.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/billing/config",
+        "issue": "Plan features list still advertises 'Send real emails via SendGrid' (server.py:503). This (a) violates the MC-6 grep requirement (case-insensitive 'sendgrid' must be absent from server.py) and (b) is stale UX copy — the feature is now 'open in your device's mail app' via expo-mail-composer, not a SendGrid relay. Suggested replacement: 'Email drafts from your device's mail app'."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mail_composer.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_mail_composer.xml",
+    "/app/test_reports/pytest/pytest_regression_existing.xml"
+  ],
+  "action_items": [
+    "Replace the string 'Send real emails via SendGrid' on server.py:503 with 'Email drafts from your device's mail app' (or similar) to satisfy MC-6 and update stale UX copy shown on the Plus upgrade screen. This is the only remaining SendGrid reference in the backend source."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1226 lines — over the 700-line soft limit noted in the review guidelines. Consider splitting into routers (auth, billing, shifts, export) in a follow-up.",
+    "server.py:487 and 761 still use the literal 'ziina' as a provider tag inside responses — fine (not on the forbidden list), just calling it out for consistency with the new naming."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mail_composer.py (NEW: 16 tests covering MC-1..MC-7, SU-1, Regressions 2-6)"
+  ],
+  "success_rate": {
+    "backend": "96% (26/27 tests: 16 mail-composer + 11 existing regression; 1 failure = MC-6 sendgrid copy string)",
+    "frontend": "not tested (backend-only per review request)"
+  },
+  "seed_data_creation": "Tests create ephemeral TEST_-prefixed free users, CCAD @ccad.ae + @clevelandclinicabudhabi.ae users, and one live Ziina payment_intent per test run. No manual seeding needed — superuser is auto-seeded by the backend from env.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend was restarted twice during this run to clear the login rate-limit bucket before Regression 6. If you rerun test_mail_composer.py, restart backend first (sudo supervisorctl restart backend) or the rate-limit test may 429 too early because prior tests share the same client IP. Real Ziina API is hit in test_reg2 and test_reg3 — network flakiness there is not a code bug.",
+  "rca_of_issue": "MC-6 failure — server.py:503 is inside the hard-coded feature bullet list returned by GET /api/billing/config. It was missed during the SendGrid removal pass because the string is a user-facing marketing bullet, not an integration reference. Repro: `grep -in sendgrid /app/backend/server.py` returns line 503. Fix: change the bullet to something like 'Email drafts from your device's mail app' — one-line edit, no functional impact."
+}

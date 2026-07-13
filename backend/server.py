@@ -24,15 +24,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, EmailStr, Field
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import (
-    Attachment,
-    Disposition,
-    FileContent,
-    FileName,
-    FileType,
-    Mail,
-)
 from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
@@ -59,12 +50,6 @@ JWT_EXPIRES_HOURS = 24 * 7  # 7 days
 SUPERUSER_EMAIL = os.environ.get("SUPERUSER_EMAIL", "").strip()
 SUPERUSER_PASSWORD = os.environ.get("SUPERUSER_PASSWORD", "").strip()
 
-SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "").strip()
-SENDGRID_FROM_EMAIL = os.environ.get(
-    "SENDGRID_FROM_EMAIL",
-    "Foxory Shift Calendar <no-reply@foxory.net>",
-).strip()
-
 ZIINA_API_KEY = os.environ.get("ZIINA_API_KEY", "").strip()
 ZIINA_API_BASE = os.environ.get("ZIINA_API_BASE", "https://api-v2.ziina.com/api").rstrip("/")
 ZIINA_TEST_MODE = os.environ.get("ZIINA_TEST_MODE", "true").strip().lower() == "true"
@@ -73,9 +58,6 @@ ZIINA_CURRENCY = os.environ.get("ZIINA_CURRENCY", "AED").strip().upper()
 ZIINA_WEBHOOK_SECRET = os.environ.get("ZIINA_WEBHOOK_SECRET", "").strip()
 PLUS_PLAN_ID = "plus_yearly"
 PLUS_DURATION_DAYS = 365
-
-# SEC-004: per-user daily send quota for real email delivery.
-EMAIL_SEND_DAILY_QUOTA = int(os.environ.get("EMAIL_SEND_DAILY_QUOTA", "30"))
 
 # CORS lockdown (P3): explicit allowlist, no wildcard.
 _default_origins = "http://localhost:8081,http://localhost:19006,http://localhost:3000"
@@ -246,9 +228,6 @@ class ShiftUpdate(BaseModel):
 class ExportRequest(BaseModel):
     month: str  # "YYYY-MM"
     include_confirmed: bool = False
-    email_to: Optional[EmailStr] = None
-    send: bool = False  # if True, attempt real delivery via SendGrid
-    attach_xlsx: bool = False  # attach the .xlsx workbook when sending
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +254,7 @@ async def seed_superuser() -> None:
             "hashed_password": hash_password(SUPERUSER_PASSWORD),
             "is_superuser": True,
             "plan": "plus",
+            "plan_source": "paid",
             "created_at": now,
             "updated_at": now,
         }
@@ -283,10 +263,11 @@ async def seed_superuser() -> None:
     else:
         # Only re-affirm the superuser flag; leave password + plan untouched
         # so env leakage can't silently reset the admin password.
-        await db.users.update_one(
-            {"_id": existing["_id"]},
-            {"$set": {"is_superuser": True, "updated_at": now}},
-        )
+        # Backfill plan_source for accounts seeded before the field existed.
+        set_doc: dict[str, Any] = {"is_superuser": True, "updated_at": now}
+        if not existing.get("plan_source"):
+            set_doc["plan_source"] = "paid" if existing.get("plan") == "plus" else "free"
+        await db.users.update_one({"_id": existing["_id"]}, {"$set": set_doc})
         logger.info("Superuser %s already present; flag re-affirmed", SUPERUSER_EMAIL)
 
 
@@ -1195,55 +1176,6 @@ def _build_email_html(user: dict, month: str, shifts: list[dict]) -> str:
 </html>"""
 
 
-def _send_email_via_sendgrid(
-    to_email: str,
-    subject: str,
-    text_body: str,
-    html_body: str,
-    attachment: Optional[tuple[str, bytes, str]] = None,
-) -> tuple[bool, Optional[str], Optional[str]]:
-    """Send email via SendGrid.
-
-    Returns (delivered, message_id, error). If the API key is missing this
-    returns (False, None, 'no_api_key') so callers can degrade to preview-only.
-    """
-    if not SENDGRID_API_KEY:
-        return False, None, "no_api_key"
-
-    message = Mail(
-        from_email=SENDGRID_FROM_EMAIL,
-        to_emails=to_email,
-        subject=subject,
-        plain_text_content=text_body,
-        html_content=html_body,
-    )
-
-    if attachment:
-        filename, data, content_type = attachment
-        message.attachment = Attachment(
-            FileContent(base64.b64encode(data).decode("ascii")),
-            FileName(filename),
-            FileType(content_type),
-            Disposition("attachment"),
-        )
-
-    try:
-        sg = SendGridAPIClient(SENDGRID_API_KEY)
-        resp = sg.send(message)
-        message_id = None
-        try:
-            message_id = resp.headers.get("X-Message-Id")
-        except Exception:  # noqa: BLE001
-            message_id = None
-        delivered = 200 <= int(getattr(resp, "status_code", 0)) < 300
-        if not delivered:
-            return False, message_id, f"http_{resp.status_code}"
-        return True, message_id, None
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("SendGrid delivery failed")
-        return False, None, str(exc)
-
-
 @api_router.post("/export/xlsx")
 async def export_xlsx(body: ExportRequest, current_user: dict = Depends(get_current_user)):
     _require_plus(current_user)
@@ -1267,90 +1199,28 @@ async def export_xlsx(body: ExportRequest, current_user: dict = Depends(get_curr
 
 @api_router.post("/export/email")
 async def export_email(body: ExportRequest, current_user: dict = Depends(get_current_user)):
+    """Render a draft-plan email (subject / plain-text body / HTML body).
+
+    Delivery is handled on the client via the native mail composer
+    (`expo-mail-composer`) which opens the user's own mail app pre-filled.
+    This endpoint no longer relays mail; it is a pure rendering endpoint.
+    """
     try:
         datetime.strptime(body.month, "%Y-%m")
     except ValueError:
         raise HTTPException(status_code=400, detail="month must be YYYY-MM")
     shifts = await _fetch_shifts_for_export(current_user["id"], body.month, body.include_confirmed)
-
-    # SEC-004: hard-pin recipient to the authenticated user's own email.
-    # Any client-supplied `email_to` that is not the caller's email is
-    # rejected so the send endpoint cannot be used to relay branded email
-    # to arbitrary third parties.
-    owner_email = current_user["email"]
-    if body.email_to and body.email_to.lower() != owner_email.lower():
-        raise HTTPException(
-            status_code=400,
-            detail="For now, draft plans can only be emailed to your own account address.",
-        )
-    to_email = owner_email
-
     subject = f"Foxory Shift Calendar — Draft Plan for {body.month}"
     body_text = _build_email_body(current_user, body.month, shifts)
     body_html = _build_email_html(current_user, body.month, shifts)
-
-    result: dict[str, Any] = {
-        "to": to_email,
+    return {
+        "to": current_user["email"],
         "subject": subject,
         "body": body_text,
         "html": body_html,
         "shift_count": len(shifts),
         "signature": "Created by Foxory.net",
-        "delivered": False,
-        "provider": None,
-        "message_id": None,
-        "delivery_error": None,
-        "sendgrid_configured": bool(SENDGRID_API_KEY),
     }
-
-    if body.send:
-        _require_plus(current_user)
-
-        # SEC-004: per-user daily quota on real sends.
-        since = datetime.now(timezone.utc) - timedelta(hours=24)
-        recent = await db.email_sends.count_documents(
-            {"user_id": current_user["id"], "sent_at": {"$gte": since}}
-        )
-        if recent >= EMAIL_SEND_DAILY_QUOTA:
-            raise HTTPException(
-                status_code=429,
-                detail=(
-                    f"Daily email quota reached ({EMAIL_SEND_DAILY_QUOTA}/24h). "
-                    "Try again later."
-                ),
-            )
-
-        attachment = None
-        if body.attach_xlsx:
-            xlsx_bytes = _build_xlsx(current_user, body.month, shifts)
-            attachment = (
-                f"foxory-shift-plan-{body.month}.xlsx",
-                xlsx_bytes,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-        delivered, message_id, err = _send_email_via_sendgrid(
-            to_email, subject, body_text, body_html, attachment
-        )
-        result["delivered"] = delivered
-        result["provider"] = "sendgrid" if SENDGRID_API_KEY else None
-        result["message_id"] = message_id
-        result["delivery_error"] = err
-
-        await db.email_sends.insert_one(
-            {
-                "id": str(uuid.uuid4()),
-                "user_id": current_user["id"],
-                "to": to_email,
-                "month": body.month,
-                "shift_count": len(shifts),
-                "delivered": delivered,
-                "message_id": message_id,
-                "error": err,
-                "sent_at": datetime.now(timezone.utc),
-            }
-        )
-
-    return result
 
 
 app.include_router(api_router)

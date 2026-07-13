@@ -178,9 +178,6 @@ export const api = {
     body: {
       month: string;
       include_confirmed?: boolean;
-      email_to?: string;
-      send?: boolean;
-      attach_xlsx?: boolean;
     },
   ) =>
     request<{
@@ -190,11 +187,6 @@ export const api = {
       html: string;
       shift_count: number;
       signature: string;
-      delivered: boolean;
-      provider: string | null;
-      message_id: string | null;
-      delivery_error: string | null;
-      sendgrid_configured: boolean;
     }>("/export/email", {
       method: "POST",
       body: JSON.stringify(body),

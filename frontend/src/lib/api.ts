@@ -1,15 +1,5 @@
-const RAW_API_BASE =
-  process.env.EXPO_PUBLIC_API_URL ||
-  process.env.EXPO_PUBLIC_BACKEND_URL ||
-  "http://localhost:8001/api";
-
-const API_BASE = RAW_API_BASE.endsWith("/api")
-  ? RAW_API_BASE
-  : `${RAW_API_BASE.replace(/\/$/, "")}/api`;
-
-type RequestInitWithToken = RequestInit & {
-  token?: string | null;
-};
+export const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "";
+export const API_BASE = `${BACKEND_URL}/api`;
 
 export type AuthUser = {
   id: string;
@@ -17,11 +7,22 @@ export type AuthUser = {
   display_name?: string | null;
   is_superuser: boolean;
   plan: "free" | "plus" | string;
-  account_type?: "pending" | "ccad_free" | "paid_subscription" | "expired" | string;
-  email_verified?: boolean;
-  subscription_active?: boolean;
-  access_active?: boolean;
   created_at: string;
+  plus_expires_at?: string | null;
+};
+
+export type Shift = {
+  id: string;
+  user_id: string;
+  date: string;
+  type: "day" | "night" | "on_call" | "off";
+  start_time?: string | null;
+  end_time?: string | null;
+  location?: string | null;
+  note?: string | null;
+  is_draft: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
 export type LoginResponse = {
@@ -30,76 +31,13 @@ export type LoginResponse = {
   user: AuthUser;
 };
 
-export type ShiftType = {
-  code: string;
-  label: string;
-  category: string;
-  start_time: string;
-  end_time: string;
-  color: string;
-};
+export type ApiError = Error & { status?: number; code?: string };
 
-export type Shift = {
-  id: string;
-  user_id: string;
-  date: string;
-  type: string;
-  start_time?: string | null;
-  end_time?: string | null;
-  location?: string | null;
-  note?: string | null;
-  is_draft: boolean;
-  source?: string;
-  created_at: string;
-  updated_at: string;
-};
-
-export type PlannerDraft = {
-  id: string;
-  user_id: string;
-  plan_name: string;
-  start_date: string;
-  end_date: string;
-  status: string;
-  notes?: string | null;
-  calendar_affected: boolean;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-};
-
-export type PlannerDay = {
-  id: string;
-  planner_draft_id: string;
-  date: string;
-  current_confirmed_shift: string;
-  proposed_plan: string;
-  action_needed: string;
-  notes: string;
-  created_at: string;
-  updated_at: string;
-};
-
-export type PlannerDraftDetails = {
-  draft: PlannerDraft;
-  days: PlannerDay[];
-};
-
-export type FamilyMember = {
-  id: string;
-  user_id: string;
-  name: string;
-  email?: string | null;
-  privacy_level: number;
-  availability: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-};
-
-async function request<T>(path: string, init: RequestInitWithToken = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  init: RequestInit & { token?: string | null } = {},
+): Promise<T> {
   const { token, headers, ...rest } = init;
-
   const res = await fetch(`${API_BASE}${path}`, {
     ...rest,
     headers: {
@@ -108,24 +46,33 @@ async function request<T>(path: string, init: RequestInitWithToken = {}): Promis
       ...(headers || {}),
     },
   });
-
   if (!res.ok) {
     let detail = `Request failed (${res.status})`;
+    let code: string | undefined;
     try {
       const body = await res.json();
       if (body?.detail) {
-        detail =
-          typeof body.detail === "string"
-            ? body.detail
-            : JSON.stringify(body.detail);
+        if (typeof body.detail === "string") {
+          detail = body.detail;
+        } else if (typeof body.detail === "object") {
+          detail = body.detail.message || JSON.stringify(body.detail);
+          code = body.detail.code;
+        }
       }
     } catch {
       // ignore
     }
-    throw new Error(detail);
+    const err: ApiError = new Error(detail);
+    err.status = res.status;
+    err.code = code;
+    throw err;
   }
-
   return (await res.json()) as T;
+}
+
+export function isPlusRequired(e: unknown): boolean {
+  const err = e as ApiError | null;
+  return !!err && (err.status === 402 || err.code === "plus_required");
 }
 
 export const api = {
@@ -143,20 +90,6 @@ export const api = {
 
   me: (token: string) => request<AuthUser>("/auth/me", { token }),
 
-  verifyCcad: (token: string, email: string, code: string) =>
-    request<AuthUser>("/auth/verify-ccad", {
-      method: "POST",
-      body: JSON.stringify({ email, code }),
-      token,
-    }),
-
-  mockSubscribe: (token: string) =>
-    request<AuthUser>("/auth/mock-subscribe", {
-      method: "POST",
-      body: JSON.stringify({ activate: true }),
-      token,
-    }),
-
   branding: () =>
     request<{
       app_name: string;
@@ -165,8 +98,6 @@ export const api = {
       created_by_url: string;
       creator_signature: string;
     }>("/branding"),
-
-  listShiftTypes: () => request<ShiftType[]>("/shift-types"),
 
   listShifts: (token: string, month?: string, isDraft?: boolean) => {
     const params = new URLSearchParams();
@@ -186,7 +117,6 @@ export const api = {
       location?: string | null;
       note?: string | null;
       is_draft?: boolean;
-      source?: string;
     },
   ) =>
     request<Shift>("/shifts", {
@@ -205,7 +135,6 @@ export const api = {
       location: string | null;
       note: string | null;
       is_draft: boolean;
-      source: string;
     }>,
   ) =>
     request<Shift>(`/shifts/${id}`, {
@@ -215,7 +144,7 @@ export const api = {
     }),
 
   deleteShift: (token: string, id: string) =>
-    request<{ deleted: boolean; id: string }>(`/shifts/${id}`, {
+    request<{ deleted: boolean }>(`/shifts/${id}`, {
       method: "DELETE",
       token,
     }),
@@ -223,89 +152,6 @@ export const api = {
   confirmShift: (token: string, id: string) =>
     request<Shift>(`/shifts/${id}/confirm`, {
       method: "POST",
-      token,
-    }),
-
-  createPlannerDraft: (
-    token: string,
-    body: { plan_name: string; start_date: string; notes?: string | null },
-  ) =>
-    request<PlannerDraft>("/planner/drafts", {
-      method: "POST",
-      body: JSON.stringify(body),
-      token,
-    }),
-
-  listPlannerDrafts: (token: string) =>
-    request<PlannerDraft[]>("/planner/drafts", { token }),
-
-  getPlannerDraft: (token: string, draftId: string) =>
-    request<PlannerDraftDetails>(`/planner/drafts/${draftId}`, { token }),
-
-  updatePlannerDay: (
-    token: string,
-    dayId: string,
-    body: Partial<{
-      proposed_plan: string;
-      action_needed: string;
-      notes: string;
-    }>,
-  ) =>
-    request<PlannerDay>(`/planner/days/${dayId}`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
-      token,
-    }),
-
-  exportPlannerXlsx: (token: string, draftId: string) =>
-    request<{
-      filename: string;
-      content_type: string;
-      base64: string;
-      size_bytes: number;
-      created_by: string;
-    }>(`/planner/drafts/${draftId}/export-xlsx`, {
-      method: "POST",
-      token,
-    }),
-
-  emailPlannerDraft: (
-    token: string,
-    draftId: string,
-    body: { email_to?: string },
-  ) =>
-    request<{
-      to: string;
-      subject: string;
-      body: string;
-      status: string;
-    }>(`/planner/drafts/${draftId}/email`, {
-      method: "POST",
-      body: JSON.stringify(body),
-      token,
-    }),
-
-  listFamilyMembers: (token: string) =>
-    request<FamilyMember[]>("/family-members", { token }),
-
-  createFamilyMember: (
-    token: string,
-    body: {
-      name: string;
-      email?: string | null;
-      privacy_level: number;
-      availability: string;
-    },
-  ) =>
-    request<FamilyMember>("/family-members", {
-      method: "POST",
-      body: JSON.stringify(body),
-      token,
-    }),
-
-  deleteFamilyMember: (token: string, id: string) =>
-    request<{ deleted: boolean; id: string }>(`/family-members/${id}`, {
-      method: "DELETE",
       token,
     }),
 
@@ -351,6 +197,53 @@ export const api = {
     }>("/export/email", {
       method: "POST",
       body: JSON.stringify(body),
+      token,
+    }),
+
+  billingConfig: () =>
+    request<{
+      provider: string;
+      test_mode: boolean;
+      configured: boolean;
+      currency: string;
+      price_fils: number;
+      price_display: string;
+      plans: {
+        id: string;
+        name: string;
+        price_display: string;
+        badge_display: string;
+        period: string;
+        features: string[];
+      }[];
+    }>("/billing/config"),
+
+  checkout: (
+    token: string,
+    body: { success_url?: string; cancel_url?: string } = {},
+  ) =>
+    request<{
+      payment_intent_id: string;
+      redirect_url: string;
+      status: string;
+      test_mode: boolean;
+      price_display: string;
+    }>("/billing/checkout", {
+      method: "POST",
+      body: JSON.stringify(body),
+      token,
+    }),
+
+  verifyCheckout: (token: string, payment_intent_id: string) =>
+    request<{
+      payment_intent_id: string;
+      status: string;
+      activated: boolean;
+      plus_expires_at: string | null;
+      user: AuthUser | null;
+    }>("/billing/verify", {
+      method: "POST",
+      body: JSON.stringify({ payment_intent_id }),
       token,
     }),
 };

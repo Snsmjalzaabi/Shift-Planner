@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -10,6 +11,8 @@ import { colors, radius, spacing } from "@/src/theme/colors";
 
 export default function SettingsScreen() {
   const { user, logout } = useAuth();
+  const router = useRouter();
+  const isPlus = user?.plan === "plus";
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -87,19 +90,35 @@ export default function SettingsScreen() {
         {/* Plan */}
         <Text style={styles.sectionTitle}>Access</Text>
         <View style={styles.group}>
-          <View style={styles.planRow}>
-            <Ionicons name="sparkles" size={16} color={colors.neonHover} />
+          <TouchableOpacity
+            testID="upgrade-open-btn"
+            onPress={() => router.push("/(app)/upgrade")}
+            style={styles.planRow}
+            activeOpacity={0.75}
+          >
+            <Ionicons
+              name={isPlus ? "ribbon" : "sparkles"}
+              size={18}
+              color={colors.neonHover}
+            />
             <View style={{ flex: 1 }}>
               <Text style={styles.planTitle}>
-                {user?.plan === "plus" ? "Plus $2.99/year" : "CCAD Free Access"}
+                {isPlus
+                  ? "Foxory Plus — active"
+                  : "Upgrade to Foxory Plus"}
               </Text>
               <Text style={styles.planSub}>
-                {user?.plan === "plus"
-                  ? "Unlimited exports, priority planning"
-                  : "Basic planning, monthly XLSX export"}
+                {isPlus
+                  ? "Multi-month planning, XLSX export, email delivery."
+                  : "AED 10.99/year · XLSX exports, email sending, multi-month planning."}
               </Text>
             </View>
-          </View>
+            <Ionicons
+              name="chevron-forward"
+              size={16}
+              color={colors.textMuted}
+            />
+          </TouchableOpacity>
         </View>
 
         {/* Actions */}

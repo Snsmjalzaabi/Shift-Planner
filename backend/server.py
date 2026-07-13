@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import bcrypt
+import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -51,6 +52,14 @@ SENDGRID_FROM_EMAIL = os.environ.get(
     "SENDGRID_FROM_EMAIL",
     "Foxory Shift Calendar <no-reply@foxory.net>",
 ).strip()
+
+ZIINA_API_KEY = os.environ.get("ZIINA_API_KEY", "").strip()
+ZIINA_API_BASE = os.environ.get("ZIINA_API_BASE", "https://api-v2.ziina.com/api").rstrip("/")
+ZIINA_TEST_MODE = os.environ.get("ZIINA_TEST_MODE", "true").strip().lower() == "true"
+ZIINA_PRICE_FILS = int(os.environ.get("ZIINA_PRICE_FILS", "1099"))  # 10.99 AED
+ZIINA_CURRENCY = os.environ.get("ZIINA_CURRENCY", "AED").strip().upper()
+PLUS_PLAN_ID = "plus_yearly"
+PLUS_DURATION_DAYS = 365
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -334,27 +343,48 @@ class PlanUpdate(BaseModel):
 async def update_plan(
     body: PlanUpdate, current_user: dict = Depends(get_current_user)
 ):
-    """Mock plan activation. Payments are disabled for now — tapping
-    Upgrade in Settings simply flips the flag. Real Stripe integration
-    can replace this endpoint later."""
+    """Admin-only plan flip (used by superuser for testing).
+    Regular users must go through /billing/checkout + /billing/verify."""
+    if not current_user.get("is_superuser"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only superusers may change plans directly. Use /billing/checkout.",
+        )
     now = datetime.now(timezone.utc)
     await db.users.update_one(
         {"id": current_user["id"]},
         {"$set": {"plan": body.plan, "updated_at": now}},
     )
-    fresh = await db.users.find_one({"id": current_user["id"]}, {"_id": 0, "hashed_password": 0})
+    fresh = await db.users.find_one(
+        {"id": current_user["id"]}, {"_id": 0, "hashed_password": 0}
+    )
     return _public_user(fresh)
+
+
+# ---------------------------------------------------------------------------
+# Billing: Ziina hosted checkout for the Plus plan
+# ---------------------------------------------------------------------------
+def _price_display() -> str:
+    whole = ZIINA_PRICE_FILS // 100
+    fract = ZIINA_PRICE_FILS % 100
+    return f"{ZIINA_CURRENCY} {whole}.{fract:02d}/year"
 
 
 @api_router.get("/billing/config")
 async def billing_config():
     return {
-        "provider": None,
+        "provider": "ziina",
+        "test_mode": ZIINA_TEST_MODE,
+        "configured": bool(ZIINA_API_KEY),
+        "currency": ZIINA_CURRENCY,
+        "price_fils": ZIINA_PRICE_FILS,
+        "price_display": _price_display(),
         "plans": [
             {
-                "id": "plus_yearly",
+                "id": PLUS_PLAN_ID,
                 "name": "Foxory Plus",
-                "price_display": "$2.99/year",
+                "price_display": _price_display(),
+                "badge_display": "Plus $2.99/year",
                 "period": "year",
                 "features": [
                     "XLSX export with Plan Summary + Shift Details",
@@ -365,7 +395,171 @@ async def billing_config():
                 ],
             }
         ],
-        "note": "Payments coming soon — activate instantly with your promo access.",
+    }
+
+
+class CheckoutRequest(BaseModel):
+    success_url: Optional[str] = None
+    cancel_url: Optional[str] = None
+
+
+DEFAULT_SUCCESS_URL = "foxory://billing/success"
+DEFAULT_CANCEL_URL = "foxory://billing/cancel"
+
+
+@api_router.post("/billing/checkout")
+async def create_checkout(
+    body: CheckoutRequest, current_user: dict = Depends(get_current_user)
+):
+    if not ZIINA_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Ziina API key not configured on the backend.",
+        )
+    if current_user.get("plan") == "plus":
+        raise HTTPException(status_code=400, detail="Already on Plus plan.")
+
+    success_url = body.success_url or DEFAULT_SUCCESS_URL
+    cancel_url = body.cancel_url or DEFAULT_CANCEL_URL
+
+    payload = {
+        "amount": ZIINA_PRICE_FILS,
+        "currency_code": ZIINA_CURRENCY,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "message": f"Foxory Plus — {_price_display()}",
+        "test": ZIINA_TEST_MODE,
+    }
+    headers = {
+        "Authorization": f"Bearer {ZIINA_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            resp = await http.post(
+                f"{ZIINA_API_BASE}/payment_intent", json=payload, headers=headers
+            )
+    except httpx.HTTPError as exc:
+        logger.exception("Ziina checkout network error")
+        raise HTTPException(status_code=502, detail=f"Ziina network error: {exc}")
+
+    if resp.status_code >= 400:
+        logger.error("Ziina checkout failed: %s %s", resp.status_code, resp.text)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ziina rejected the request ({resp.status_code}): {resp.text}",
+        )
+
+    data = resp.json()
+    pi_id = data.get("id")
+    redirect_url = data.get("redirect_url")
+    pi_status = data.get("status")
+    if not pi_id or not redirect_url:
+        raise HTTPException(status_code=502, detail="Malformed Ziina response.")
+
+    now = datetime.now(timezone.utc)
+    await db.payments.insert_one(
+        {
+            "id": pi_id,
+            "user_id": current_user["id"],
+            "user_email": current_user["email"],
+            "amount_fils": ZIINA_PRICE_FILS,
+            "currency": ZIINA_CURRENCY,
+            "test_mode": ZIINA_TEST_MODE,
+            "status": pi_status or "pending",
+            "plan_id": PLUS_PLAN_ID,
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "redirect_url": redirect_url,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+
+    return {
+        "payment_intent_id": pi_id,
+        "redirect_url": redirect_url,
+        "status": pi_status,
+        "test_mode": ZIINA_TEST_MODE,
+        "price_display": _price_display(),
+    }
+
+
+class VerifyRequest(BaseModel):
+    payment_intent_id: str
+
+
+async def _fetch_ziina_intent(intent_id: str) -> dict[str, Any]:
+    headers = {"Authorization": f"Bearer {ZIINA_API_KEY}"}
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.get(f"{ZIINA_API_BASE}/payment_intent/{intent_id}", headers=headers)
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ziina rejected the status check ({resp.status_code}): {resp.text}",
+        )
+    return resp.json()
+
+
+@api_router.post("/billing/verify")
+async def verify_checkout(
+    body: VerifyRequest, current_user: dict = Depends(get_current_user)
+):
+    if not ZIINA_API_KEY:
+        raise HTTPException(status_code=503, detail="Ziina API key not configured.")
+
+    payment = await db.payments.find_one(
+        {"id": body.payment_intent_id, "user_id": current_user["id"]},
+        {"_id": 0},
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found for this user.")
+
+    try:
+        remote = await _fetch_ziina_intent(body.payment_intent_id)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Ziina verify failed")
+        raise HTTPException(status_code=502, detail=f"Ziina error: {exc}")
+
+    new_status = remote.get("status") or payment.get("status", "pending")
+    now = datetime.now(timezone.utc)
+    activated = False
+    expires_at: Optional[datetime] = None
+    fresh_user = None
+
+    update_doc: dict[str, Any] = {"status": new_status, "updated_at": now}
+
+    if new_status == "completed":
+        expires_at = now + timedelta(days=PLUS_DURATION_DAYS)
+        update_doc.update({"completed_at": now, "plus_expires_at": expires_at})
+        await db.users.update_one(
+            {"id": current_user["id"]},
+            {
+                "$set": {
+                    "plan": "plus",
+                    "plus_expires_at": expires_at,
+                    "plus_activated_at": now,
+                    "updated_at": now,
+                }
+            },
+        )
+        activated = True
+
+    await db.payments.update_one({"id": body.payment_intent_id}, {"$set": update_doc})
+
+    if activated:
+        fresh_user = await db.users.find_one(
+            {"id": current_user["id"]}, {"_id": 0, "hashed_password": 0}
+        )
+
+    return {
+        "payment_intent_id": body.payment_intent_id,
+        "status": new_status,
+        "activated": activated,
+        "plus_expires_at": expires_at.isoformat() if expires_at else None,
+        "user": _public_user(fresh_user) if fresh_user else None,
     }
 
 
@@ -396,6 +590,7 @@ def _serialize_shift(doc: dict[str, Any]) -> dict[str, Any]:
 async def create_shift(body: ShiftCreate, current_user: dict = Depends(get_current_user)):
     _validate_shift_type(body.type)
     _validate_date(body.date)
+    _require_current_month_or_plus(current_user, body.date)
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -440,6 +635,13 @@ async def update_shift(
 ):
     if body.type is not None:
         _validate_shift_type(body.type)
+    # Load existing shift to enforce plan gating on the ORIGINAL date.
+    existing = await db.shifts.find_one(
+        {"id": shift_id, "user_id": current_user["id"]}, {"_id": 0}
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Shift not found")
+    _require_current_month_or_plus(current_user, existing["date"])
     updates = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -764,6 +966,7 @@ def _send_email_via_sendgrid(
 
 @api_router.post("/export/xlsx")
 async def export_xlsx(body: ExportRequest, current_user: dict = Depends(get_current_user)):
+    _require_plus(current_user)
     try:
         datetime.strptime(body.month, "%Y-%m")
     except ValueError:
@@ -809,6 +1012,7 @@ async def export_email(body: ExportRequest, current_user: dict = Depends(get_cur
     }
 
     if body.send:
+        _require_plus(current_user)
         attachment = None
         if body.attach_xlsx:
             xlsx_bytes = _build_xlsx(current_user, body.month, shifts)

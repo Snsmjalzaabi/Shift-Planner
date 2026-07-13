@@ -4,12 +4,11 @@ import { useEffect } from "react";
 import { StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AccessGate } from "@/src/components/AccessGate";
 import { useAuth } from "@/src/context/AuthContext";
 import { colors, spacing } from "@/src/theme/colors";
 
 export default function AppTabsLayout() {
-  const { isAuthenticated, isLoading, hasAccess } = useAuth();
+  const { isAuthenticated, isLoading } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
@@ -21,10 +20,6 @@ export default function AppTabsLayout() {
 
   if (!isAuthenticated) {
     return <View style={styles.blank} />;
-  }
-
-  if (!isLoading && !hasAccess) {
-    return <AccessGate />;
   }
 
   return (
@@ -77,6 +72,12 @@ export default function AppTabsLayout() {
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="settings-outline" size={size} color={color} />
           ),
+        }}
+      />
+      <Tabs.Screen
+        name="upgrade"
+        options={{
+          href: null,
         }}
       />
     </Tabs>

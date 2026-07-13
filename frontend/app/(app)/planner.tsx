@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
+import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -19,7 +20,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { DashboardHeader } from "@/src/components/DashboardHeader";
 import { useAuth } from "@/src/context/AuthContext";
-import { api, Shift } from "@/src/lib/api";
+import { api, isPlusRequired, Shift } from "@/src/lib/api";
 import { colors, radius, shiftTheme, spacing } from "@/src/theme/colors";
 import { currentMonthKey, monthLabel, shiftDateDisplay } from "@/src/utils/dateUtils";
 import { saveAndShareXlsx } from "@/src/utils/downloadXlsx";
@@ -27,7 +28,9 @@ import { saveAndShareXlsx } from "@/src/utils/downloadXlsx";
 type Filter = "all" | "draft" | "confirmed";
 
 export default function PlannerScreen() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const router = useRouter();
+  const isPlus = user?.plan === "plus" || !!user?.is_superuser;
   const [month, setMonth] = useState<string>(currentMonthKey());
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
@@ -106,6 +109,10 @@ export default function PlannerScreen() {
 
   const doXlsx = async () => {
     if (!token) return;
+    if (!isPlus) {
+      router.push("/(app)/upgrade");
+      return;
+    }
     setExportingXlsx(true);
     setXlsxResult(null);
     setXlsxError(null);
@@ -129,6 +136,10 @@ export default function PlannerScreen() {
         setXlsxError(saved.error || "Could not save the file.");
       }
     } catch (e: any) {
+      if (isPlusRequired(e)) {
+        router.push("/(app)/upgrade");
+        return;
+      }
       setXlsxError(e?.message || "Export failed.");
     } finally {
       setExportingXlsx(false);
@@ -162,6 +173,10 @@ export default function PlannerScreen() {
 
   const doSendEmail = async () => {
     if (!token) return;
+    if (!isPlus) {
+      router.push("/(app)/upgrade");
+      return;
+    }
     setSending(true);
     try {
       const res = await api.exportEmail(token, {
@@ -178,10 +193,13 @@ export default function PlannerScreen() {
         sendgrid_configured: res.sendgrid_configured,
       });
       if (res.delivered) {
-        // refresh subject/body/to in case backend rewrote them
         setEmailPreview({ to: res.to, subject: res.subject, body: res.body });
       }
     } catch (e: any) {
+      if (isPlusRequired(e)) {
+        router.push("/(app)/upgrade");
+        return;
+      }
       setSendStatus({
         delivered: false,
         provider: null,
@@ -286,8 +304,14 @@ export default function PlannerScreen() {
         <View style={styles.exportRow}>
           <ExportButton
             testID="export-xlsx-btn"
-            label={exportingXlsx ? "Building…" : "Export XLSX"}
-            icon="document-attach-outline"
+            label={
+              exportingXlsx
+                ? "Building…"
+                : isPlus
+                ? "Export XLSX"
+                : "Export XLSX · Plus"
+            }
+            icon={isPlus ? "document-attach-outline" : "lock-closed-outline"}
             onPress={doXlsx}
             loading={exportingXlsx}
             primary
@@ -594,9 +618,17 @@ export default function PlannerScreen() {
                     <ActivityIndicator color="#0B0619" />
                   ) : (
                     <>
-                      <Ionicons name="send" size={16} color="#0B0619" />
+                      <Ionicons
+                        name={isPlus ? "send" : "lock-closed"}
+                        size={16}
+                        color="#0B0619"
+                      />
                       <Text style={styles.sendBtnText}>
-                        {sendStatus?.delivered ? "Send again" : "Send email"}
+                        {sendStatus?.delivered
+                          ? "Send again"
+                          : isPlus
+                          ? "Send email"
+                          : "Send email · Plus"}
                       </Text>
                     </>
                   )}

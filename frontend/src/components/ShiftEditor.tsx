@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -15,10 +16,9 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { api, Shift } from "@/src/lib/api";
+import { api, isPlusRequired, Shift } from "@/src/lib/api";
 import { colors, radius, shiftTheme, spacing } from "@/src/theme/colors";
 import { shiftDateDisplay } from "@/src/utils/dateUtils";
-
 type Props = {
   visible: boolean;
   onClose: () => void;
@@ -51,6 +51,7 @@ export function ShiftEditor({
   onChanged,
 }: Props) {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const [type, setType] = useState<Shift["type"]>("day");
   const [startTime, setStartTime] = useState("07:00");
   const [endTime, setEndTime] = useState("19:00");
@@ -100,6 +101,11 @@ export function ShiftEditor({
       setNote("");
       onChanged();
     } catch (e: any) {
+      if (isPlusRequired(e)) {
+        onClose();
+        router.push("/(app)/upgrade");
+        return;
+      }
       setError(e?.message || "Could not save shift");
     } finally {
       setSaving(false);

@@ -38,6 +38,19 @@ Premium mobile shift planner for nurses and caregivers with **Foxory dark-purple
 - 11/11 backend pytest cases pass (`/app/backend/tests/backend_test.py`).
 - End-to-end mobile flow verified via Playwright screenshots (login → dashboard → shift editor → save → planner → XLSX export → email preview → settings).
 
+## Ziina paywall (real hosted checkout)
+- `GET /api/billing/config` — returns provider, price (AED 10.99/year, `1099` fils), test-mode flag, plan feature list.
+- `POST /api/billing/checkout` — creates a real Ziina `payment_intent` via `https://api-v2.ziina.com/api/payment_intent`, stores the record in `payments` collection, returns `redirect_url` + `payment_intent_id`.
+- `POST /api/billing/verify` — polls Ziina `GET /payment_intent/{id}`; if `status: completed` it flips the user to `plan: "plus"` and sets `plus_expires_at = now + 365d`.
+- Frontend `/(app)/upgrade` opens the redirect via `expo-web-browser.openAuthSessionAsync` and verifies on return.
+- **Gated features** (server-enforced 402 with `code: plus_required`):
+  - `POST /api/export/xlsx` — Plus only
+  - `POST /api/export/email { send: true }` — Plus only
+  - `POST /api/shifts` and `PATCH /api/shifts/{id}` for dates outside the current calendar month — Plus only
+- **Client soft-gate**: locked "Export XLSX · Plus" and "Send email · Plus" buttons + shift editor errors all deep-link into `/(app)/upgrade` instead of showing raw errors.
+- **Env vars** (see `/app/backend/.env`): `ZIINA_API_KEY`, `ZIINA_API_BASE`, `ZIINA_TEST_MODE`, `ZIINA_PRICE_FILS`, `ZIINA_CURRENCY`.
+- Test mode is ON by default — flip `ZIINA_TEST_MODE=false` when ready to charge real money.
+
 ## Email delivery (real, via SendGrid)
 `POST /api/export/email` accepts `send: true` and `attach_xlsx: true` (with optional `email_to`) to actually deliver via SendGrid. It uses `SENDGRID_API_KEY` + `SENDGRID_FROM_EMAIL` env vars (see `/app/backend/.env`). When the key is empty the endpoint gracefully degrades to preview-only and returns `sendgrid_configured: false` + `delivery_error: "no_api_key"` — the frontend surfaces this as a subtle purple warning inside the Email Preview sheet. Response contract:
 ```

@@ -50,6 +50,9 @@ JWT_EXPIRES_HOURS = 24 * 7  # 7 days
 SUPERUSER_EMAIL = os.environ.get("SUPERUSER_EMAIL", "").strip()
 SUPERUSER_PASSWORD = os.environ.get("SUPERUSER_PASSWORD", "").strip()
 
+REVIEWER_EMAIL = os.environ.get("REVIEWER_EMAIL", "").strip()
+REVIEWER_PASSWORD = os.environ.get("REVIEWER_PASSWORD", "").strip()
+
 ZIINA_API_KEY = os.environ.get("ZIINA_API_KEY", "").strip()
 ZIINA_API_BASE = os.environ.get("ZIINA_API_BASE", "https://api-v2.ziina.com/api").rstrip("/")
 ZIINA_TEST_MODE = os.environ.get("ZIINA_TEST_MODE", "true").strip().lower() == "true"
@@ -271,9 +274,47 @@ async def seed_superuser() -> None:
         logger.info("Superuser %s already present; flag re-affirmed", SUPERUSER_EMAIL)
 
 
+async def seed_reviewer() -> None:
+    """Seed an App Store / Play Store reviewer account that starts on Plus
+    (plan_source='paid') so reviewers can exercise every gated feature without
+    paying. Never overwrites the password on subsequent boots."""
+    if not REVIEWER_EMAIL or not REVIEWER_PASSWORD:
+        return
+    existing = await db.users.find_one({"email": REVIEWER_EMAIL})
+    now = datetime.now(timezone.utc)
+    if existing is None:
+        await db.users.insert_one(
+            {
+                "id": str(uuid.uuid4()),
+                "email": REVIEWER_EMAIL,
+                "display_name": "App Reviewer",
+                "hashed_password": hash_password(REVIEWER_PASSWORD),
+                "is_superuser": False,
+                "plan": "plus",
+                "plan_source": "paid",
+                "plus_activated_at": now,
+                "plus_expires_at": now + timedelta(days=PLUS_DURATION_DAYS),
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+        logger.info("Seeded reviewer account %s", REVIEWER_EMAIL)
+    else:
+        set_doc: dict[str, Any] = {
+            "plan": "plus",
+            "plan_source": "paid",
+            "updated_at": now,
+        }
+        if not existing.get("plus_expires_at"):
+            set_doc["plus_expires_at"] = now + timedelta(days=PLUS_DURATION_DAYS)
+        await db.users.update_one({"_id": existing["_id"]}, {"$set": set_doc})
+        logger.info("Reviewer account %s already present; plan re-affirmed", REVIEWER_EMAIL)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await seed_superuser()
+    await seed_reviewer()
     yield
     client.close()
 
@@ -411,6 +452,43 @@ async def login(body: LoginRequest):
 @api_router.get("/auth/me")
 async def me(current_user: dict = Depends(get_current_user)):
     return _public_user(current_user)
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str
+    confirm: str  # must be the literal string "DELETE"
+
+
+@api_router.delete("/auth/me")
+async def delete_my_account(
+    body: DeleteAccountRequest, current_user: dict = Depends(get_current_user)
+):
+    """Permanently delete the caller's account and all their data.
+    Apple / Google both require this to be reachable inside the app."""
+    if body.confirm != "DELETE":
+        raise HTTPException(
+            status_code=400,
+            detail="Type DELETE (in capitals) to confirm.",
+        )
+    if current_user.get("is_superuser"):
+        raise HTTPException(
+            status_code=403,
+            detail="The superuser account cannot self-delete from the app.",
+        )
+    # Re-verify password from the raw user record (includes hashed_password).
+    raw = await db.users.find_one({"id": current_user["id"]})
+    if not raw or not verify_password(body.password, raw["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Password is incorrect.")
+
+    uid = current_user["id"]
+    now = datetime.now(timezone.utc)
+    # Best-effort cascade delete of user-owned data.
+    await db.shifts.delete_many({"user_id": uid})
+    await db.payments.delete_many({"user_id": uid})
+    await db.email_sends.delete_many({"user_id": uid})
+    await db.users.delete_one({"id": uid})
+    logger.info("Account deleted: %s", current_user.get("email"))
+    return {"deleted": True, "deleted_at": now.isoformat()}
 
 
 def _require_plus(user: dict[str, Any]) -> None:

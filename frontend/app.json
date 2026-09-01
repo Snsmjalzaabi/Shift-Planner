@@ -2,7 +2,7 @@
   "expo": {
     "name": "Foxory Shift Calendar",
     "slug": "foxory-shift-calendar",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "foxory",
@@ -18,7 +18,8 @@
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.foxory.shiftcalendar"
+      "package": "com.foxory.shiftcalendar",
+      "versionCode": 5
     },
     "web": {
       "bundler": "metro",
@@ -36,10 +37,25 @@
           "backgroundColor": "#000000"
         }
       ],
-      "expo-mail-composer"
+      "expo-mail-composer",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Foxory Shift Calendar to choose a schedule image for local import.",
+          "cameraPermission": "Allow Foxory Shift Calendar to photograph a schedule for local import.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "c83e1f59-1a5c-4386-b391-d70022b16e0d"
+      }
+    },
+    "owner": "snsmjalzaabi"
   }
 }

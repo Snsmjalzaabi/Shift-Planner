@@ -66,6 +66,15 @@ export default function AppTabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="import"
+        options={{
+          title: "Import",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="cloud-upload-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: "Settings",

@@ -1,4 +1,6 @@
-export const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "";
+export const BACKEND_URL = (
+  process.env.EXPO_PUBLIC_BACKEND_URL || "https://shift-planner-hymq.onrender.com"
+).replace(/\/$/, "");
 export const API_BASE = `${BACKEND_URL}/api`;
 
 export type AuthUser = {

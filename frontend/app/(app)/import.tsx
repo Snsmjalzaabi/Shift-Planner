@@ -104,23 +104,11 @@ export default function ImportScheduleScreen() {
       if (result.canceled) return;
 
       const asset = result.assets[0];
-      const { recognizeText } = await import(
-        "@infinitered/react-native-mlkit-text-recognition"
-      );
-      const recognized = await recognizeText(asset.uri);
-      const elements: PositionedText[] = recognized.blocks.flatMap((block) =>
-        block.lines.flatMap((line) =>
-          line.elements.map((element) => ({
-            text: element.text,
-            left: element.frame.left,
-            top: element.frame.top,
-            right: element.frame.right,
-            bottom: element.frame.bottom,
-          })),
-        ),
-      );
+      const { extractTextFromImage } = await import("expo-text-extractor");
+      const lines = await extractTextFromImage(asset.uri);
+      const elements: PositionedText[] = [];
       loadCandidates(
-        parseRecognizedText(elements, recognized.text),
+        parseRecognizedText(elements, lines.join("\n")),
         asset.fileName || "Schedule photo",
       );
     } catch (caught: any) {

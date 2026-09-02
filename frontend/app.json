@@ -19,7 +19,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.foxory.shiftcalendar",
-      "versionCode": 5
+      "versionCode": 6
     },
     "web": {
       "bundler": "metro",
@@ -45,7 +45,8 @@
           "cameraPermission": "Allow Foxory Shift Calendar to photograph a schedule for local import.",
           "microphonePermission": false
         }
-      ]
+      ],
+      "./plugins/withOptionalCamera"
     ],
     "experiments": {
       "typedRoutes": true

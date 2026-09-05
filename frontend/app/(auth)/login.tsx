@@ -1,8 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -23,6 +25,7 @@ type Mode = "login" | "register";
 
 export default function LoginScreen() {
   const { login, register } = useAuth();
+  const router = useRouter();
   const [mode, setMode] = useState<Mode>("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -30,6 +33,7 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [registrationMessage, setRegistrationMessage] = useState<string | null>(null);
 
   const submit = async () => {
     setError(null);
@@ -42,7 +46,16 @@ export default function LoginScreen() {
       if (mode === "login") {
         await login(email.trim(), password);
       } else {
-        await register(email.trim(), password, displayName || undefined);
+        const message = await register(
+          email.trim(),
+          password,
+          displayName || undefined,
+        );
+        if (message) {
+          setRegistrationMessage(message);
+        } else {
+          router.replace("/(app)/dashboard");
+        }
       }
     } catch (e: any) {
       setError(e?.message || "Something went wrong");
@@ -180,6 +193,34 @@ export default function LoginScreen() {
           <CreatorSignature testID="login-footer-signature" />
         </View>
       </KeyboardAwareScrollView>
+
+      <Modal
+        transparent
+        animationType="fade"
+        visible={!!registrationMessage}
+        onRequestClose={() => undefined}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.welcomeCard} testID="registration-welcome">
+            <View style={styles.welcomeIcon}>
+              <Ionicons name="heart" size={24} color={colors.neonHover} />
+            </View>
+            <Text style={styles.welcomeEyebrow}>A message from Sultan</Text>
+            <Text style={styles.welcomeTitle}>Welcome to Foxory</Text>
+            <Text style={styles.welcomeMessage}>{registrationMessage}</Text>
+            <Pressable
+              testID="registration-welcome-continue"
+              style={styles.welcomeButton}
+              onPress={() => {
+                setRegistrationMessage(null);
+                router.replace("/(app)/dashboard");
+              }}
+            >
+              <Text style={styles.welcomeButtonText}>Enjoy the app</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -391,5 +432,65 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: "auto",
     paddingTop: spacing.lg,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(4, 2, 12, 0.82)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.xl,
+  },
+  welcomeCard: {
+    width: "100%",
+    maxWidth: 380,
+    alignItems: "center",
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.neon,
+    borderRadius: radius.xl,
+    padding: spacing.xl,
+  },
+  welcomeIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(168, 85, 247, 0.18)",
+    marginBottom: spacing.md,
+  },
+  welcomeEyebrow: {
+    color: colors.textAccent,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
+  },
+  welcomeTitle: {
+    color: colors.textPrimary,
+    fontSize: 24,
+    fontWeight: "800",
+    marginTop: spacing.sm,
+  },
+  welcomeMessage: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: "center",
+    marginTop: spacing.md,
+  },
+  welcomeButton: {
+    width: "100%",
+    height: 50,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.neon,
+    borderRadius: radius.md,
+    marginTop: spacing.xl,
+  },
+  welcomeButtonText: {
+    color: "#0B0619",
+    fontSize: 15,
+    fontWeight: "800",
   },
 });

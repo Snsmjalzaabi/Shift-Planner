@@ -7,7 +7,7 @@ Premium mobile shift planner for nurses and caregivers with **Foxory dark-purple
 1. **Logo**: user-provided fox/crescent/calendar mark (`/app/frontend/assets/images/foxory-logo.png`) exposed through a single reusable `FoxoryLogo` component — swap the require path once to replace the mark globally.
 2. **App name**: “Foxory Shift Calendar” on login, dashboard header, settings, and XLSX title row.
 3. **Subtitle**: “Smart shift planning for nurses and caregivers.” on login screen (and shortened “Smart shift planning” on the sticky dashboard header).
-4. **Account badge** (top-right of dashboard header): auto-renders **PLUS $2.99/YEAR** for plus plan or **CCAD FREE ACCESS** for free plan, driven by `user.plan`.
+4. **Account badge** (top-right of dashboard header): renders **PLUS $2.99/MONTH** for Plus accounts or **FOXORY FREE** for free accounts. Private organization eligibility is never named in general UI.
 5. **Creator signature** “Created by Foxory.net” — subtle, non-ad, link-styled — appears on:
    - Login footer
    - Settings footer (plus disclaimer “A creator signature — not an advertisement.”)
@@ -39,9 +39,9 @@ Premium mobile shift planner for nurses and caregivers with **Foxory dark-purple
 - End-to-end mobile flow verified via Playwright screenshots (login → dashboard → shift editor → save → planner → XLSX export → email preview → settings).
 
 ## Ziina paywall (real hosted checkout)
-- `GET /api/billing/config` — returns provider, price (AED 10.99/year, `1099` fils), test-mode flag, plan feature list.
+- `GET /api/billing/config` — returns provider, price (AED 10.99/month, `1099` fils), test-mode flag, plan feature list.
 - `POST /api/billing/checkout` — creates a real Ziina `payment_intent` via `https://api-v2.ziina.com/api/payment_intent`, stores the record in `payments` collection, returns `redirect_url` + `payment_intent_id`.
-- `POST /api/billing/verify` — polls Ziina `GET /payment_intent/{id}`; if `status: completed` it flips the user to `plan: "plus"` and sets `plus_expires_at = now + 365d`.
+- `POST /api/billing/verify` — polls Ziina `GET /payment_intent/{id}`; if `status: completed` it flips the user to `plan: "plus"` and sets `plus_expires_at = now + 30d`.
 - `POST /api/billing/webhook` — Ziina webhook receiver. Verifies the `X-Hmac-Signature` (HMAC-SHA256, hex-encoded) against `ZIINA_WEBHOOK_SECRET`, then idempotently flips the user to Plus on `payment_intent.status.updated → completed`. Every event is stored in the `webhook_events` collection for auditing. Rejects with **401** on bad signatures. Verified end-to-end: activate on first hit, `activated:false` on replay.
 - `POST /api/billing/webhook/register` — superuser-only helper that registers the current backend's public webhook URL with Ziina using `ZIINA_WEBHOOK_SECRET`.
 - Frontend `/(app)/upgrade` opens the redirect via `expo-web-browser.openAuthSessionAsync` and verifies on return.
@@ -50,8 +50,8 @@ Premium mobile shift planner for nurses and caregivers with **Foxory dark-purple
   - `POST /api/export/email { send: true }` — Plus only
   - `POST /api/shifts` and `PATCH /api/shifts/{id}` for dates outside the current calendar month — Plus only
 - **Client soft-gate**: locked "Export XLSX · Plus" and "Send email · Plus" buttons + shift editor errors all deep-link into `/(app)/upgrade` instead of showing raw errors.
-- **Env vars** (see `/app/backend/.env`): `ZIINA_API_KEY`, `ZIINA_API_BASE`, `ZIINA_TEST_MODE`, `ZIINA_PRICE_FILS`, `ZIINA_CURRENCY`, `ZIINA_WEBHOOK_SECRET`.
-- Test mode is currently **OFF** (`ZIINA_TEST_MODE=false`) — production charges are live.
+- **Env vars** (see `backend/.env.example`): `ZIINA_API_KEY`, `ZIINA_API_BASE`, `ZIINA_TEST_MODE`, `ZIINA_PRICE_FILS`, `ZIINA_CURRENCY`, `ZIINA_WEBHOOK_SECRET`, and the private `INCLUDED_ACCESS_DOMAINS` allowlist.
+- Billing mode is controlled only by the Render `ZIINA_TEST_MODE` environment variable; secrets are never committed.
 
 ### Registering the webhook with Ziina
 Once your backend is publicly reachable, register the webhook so activation still fires when a user closes the app mid-flow:

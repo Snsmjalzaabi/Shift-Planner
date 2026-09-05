@@ -29,7 +29,7 @@ type AuthState = {
     email: string,
     password: string,
     displayName?: string,
-  ) => Promise<void>;
+  ) => Promise<string | null>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
 };
@@ -88,7 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(resp.user);
       await saveToken(resp.access_token);
       await saveCachedUser(JSON.stringify(resp.user));
-      router.replace("/(app)/dashboard");
+      return resp.registration_message || null;
     },
     [],
   );

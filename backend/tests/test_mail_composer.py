@@ -17,9 +17,14 @@ BASE_URL = os.environ.get(
 ).rstrip("/")
 API = f"{BASE_URL}/api"
 
-SUPER_EMAIL = "Sultan942002@yahoo.com"
-SUPER_PASS = "S.nsmjalzaabi1"
+SUPER_EMAIL = os.environ.get("TEST_SUPERUSER_EMAIL", "")
+SUPER_PASS = os.environ.get("TEST_SUPERUSER_PASSWORD", "")
 MONTH = "2026-03"
+
+pytestmark = pytest.mark.skipif(
+    not SUPER_EMAIL or not SUPER_PASS,
+    reason="Set TEST_SUPERUSER_EMAIL and TEST_SUPERUSER_PASSWORD for integration tests.",
+)
 
 SERVER_PY = Path("/app/backend/server.py")
 BACKEND_ENV = Path("/app/backend/.env")
@@ -138,7 +143,7 @@ def test_mc2_legacy_fields_ignored_or_422(super_token):
 # --------------------------------------------------------------------------
 def test_mc5_ccad_user_export_email(fresh_ccad_user):
     assert fresh_ccad_user["user"]["plan"] == "plus"
-    assert fresh_ccad_user["user"]["plan_source"] == "ccad"
+    assert "plan_source" not in fresh_ccad_user["user"]
     r = session.post(
         f"{API}/export/email",
         json={"month": MONTH, "include_confirmed": True},
@@ -192,15 +197,15 @@ def test_mc7_no_sendgrid_import():
 
 
 # --------------------------------------------------------------------------
-# SU-1 : superuser has plan_source='paid'
+# SU-1 : superuser has Plus without exposing its internal source
 # --------------------------------------------------------------------------
-def test_su1_superuser_plan_source_paid(super_token):
+def test_su1_superuser_plan_source_private(super_token):
     r = session.get(f"{API}/auth/me", headers=_auth(super_token), timeout=15)
     assert r.status_code == 200
     d = r.json()
     assert d["email"] == SUPER_EMAIL
     assert d["plan"] == "plus"
-    assert d["plan_source"] == "paid", f"plan_source={d.get('plan_source')!r}"
+    assert "plan_source" not in d
     assert d["is_superuser"] is True
 
 
@@ -283,13 +288,13 @@ def test_reg3_webhook_valid_hmac_and_plus_activation(fresh_free_user):
     assert r2.status_code == 200
     assert r2.json()["activated"] is False
 
-    # /auth/me now reflects plus + paid
+    # /auth/me now reflects Plus without exposing its internal source.
     me = session.get(f"{API}/auth/me",
                      headers=_auth(fresh_free_user["token"]), timeout=15)
     assert me.status_code == 200
     md = me.json()
     assert md["plan"] == "plus"
-    assert md["plan_source"] == "paid"
+    assert "plan_source" not in md
 
 
 # --------------------------------------------------------------------------
@@ -314,19 +319,19 @@ def test_reg4_free_user_xlsx_402():
 
 
 # --------------------------------------------------------------------------
-# Regression 5: CCAD auto-plus + plan_source='ccad'
+# Regression 5: private organization access is included and remains Plus
 # --------------------------------------------------------------------------
 def test_reg5_ccad_auto_upgrade(fresh_ccad_user):
     u = fresh_ccad_user["user"]
     assert u["plan"] == "plus"
-    assert u["plan_source"] == "ccad"
+    assert "plan_source" not in u
     # Also verify via /me
     r = session.get(f"{API}/auth/me",
                     headers=_auth(fresh_ccad_user["token"]), timeout=15)
     assert r.status_code == 200
     d = r.json()
     assert d["plan"] == "plus"
-    assert d["plan_source"] == "ccad"
+    assert "plan_source" not in d
 
 
 def test_reg5_ccad_second_domain():
@@ -339,7 +344,7 @@ def test_reg5_ccad_second_domain():
     assert r.status_code == 200, r.text
     u = r.json()["user"]
     assert u["plan"] == "plus"
-    assert u["plan_source"] == "ccad"
+    assert "plan_source" not in u
 
 
 # --------------------------------------------------------------------------

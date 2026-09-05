@@ -36,7 +36,6 @@ export default function UpgradeScreen() {
   }>({ kind: "idle" });
 
   const isPlus = user?.plan === "plus";
-  const isCcad = user?.plan_source === "ccad";
 
   useEffect(() => {
     (async () => {
@@ -92,7 +91,7 @@ export default function UpgradeScreen() {
           message: `You're on Foxory Plus until ${
             check.plus_expires_at
               ? new Date(check.plus_expires_at).toLocaleDateString()
-              : "next year"
+              : "next month"
           }.`,
         });
       } else {
@@ -148,17 +147,17 @@ export default function UpgradeScreen() {
           <Text style={styles.heroSub}>
             {isPlus
               ? "All Plus features are unlocked. Thank you for supporting the app."
-              : "Multi-month planning, XLSX exports, and real email delivery — one price, one year."}
+              : "Multi-month planning, XLSX exports, and email delivery for one monthly price."}
           </Text>
 
           <View style={styles.priceRow}>
             <Text style={styles.priceMain}>
-              {plan?.price_display || "AED 10.99/year"}
+              {plan?.price_display || "AED 10.99/month"}
             </Text>
             <View style={styles.priceBadge}>
               <Ionicons name="sparkles" size={11} color={colors.neonHover} />
               <Text style={styles.priceBadgeText}>
-                {plan?.badge_display || "Plus $2.99/year"}
+                {plan?.badge_display || "Plus $2.99/month"}
               </Text>
             </View>
           </View>
@@ -268,7 +267,7 @@ export default function UpgradeScreen() {
               <>
                 <Ionicons name="sparkles" size={16} color="#0B0619" />
                 <Text style={styles.ctaText}>
-                  Upgrade to Plus — {plan?.price_display || "AED 10.99/year"}
+                  Upgrade to Plus — {plan?.price_display || "AED 10.99/month"}
                 </Text>
               </>
             )}
@@ -278,14 +277,12 @@ export default function UpgradeScreen() {
         {isPlus && (
           <View style={styles.plusCard} testID="already-plus">
             <Ionicons
-              name={isCcad ? "medical" : "ribbon"}
+              name="ribbon"
               size={18}
-              color={isCcad ? colors.success : colors.neonHover}
+              color={colors.neonHover}
             />
             <Text style={styles.plusText}>
-              {isCcad
-                ? "CCAD Free Access — all Plus features are already unlocked at no charge."
-                : "All features unlocked. Enjoy the calendar."}
+              All features unlocked. Enjoy the calendar.
             </Text>
           </View>
         )}
@@ -299,7 +296,7 @@ export default function UpgradeScreen() {
         )}
 
         <Text style={styles.legal}>
-          Cancel anytime before renewal. Ziina Payment Services · Test mode is{" "}
+          Access lasts 30 days per payment. Ziina Payment Services · Test mode is{" "}
           {config?.test_mode ? "ON" : "OFF"}.
         </Text>
 

@@ -1,7 +1,7 @@
 """CCAD auto-Plus + P3 security-audit hardening verification.
 
 Covers:
-  - CCAD-1..CCAD-8: CCAD email domains get auto Plus (plan_source='ccad').
+  - CCAD-1..CCAD-8: eligible organization domains get private included access.
   - P3-1/P3-2: Rate-limits on /auth/login and /auth/register.
   - P3-3: CORS lockdown at the *application* layer (see NOTE below).
   - P3-4: Neutral registration error (no email-exists leak).
@@ -39,9 +39,9 @@ BASE_URL = os.environ["EXPO_PUBLIC_BACKEND_URL"].rstrip("/") if os.environ.get(
 API = f"{BASE_URL}/api"
 INTERNAL_API = "http://localhost:8001/api"  # bypasses K8s ingress CORS override
 
-SUPER_EMAIL = "Sultan942002@yahoo.com"
-SUPER_PASS = "S.nsmjalzaabi1"
-ZIINA_SECRET = "rQmDpT0554V3Yzxpj151pgHnAGryFXP1_YZjAkRApR8"
+SUPER_EMAIL = os.environ.get("TEST_SUPERUSER_EMAIL", "nobody@example.com")
+SUPER_PASS = os.environ.get("TEST_SUPERUSER_PASSWORD", "invalid-test-password")
+ZIINA_SECRET = os.environ.get("ZIINA_WEBHOOK_SECRET", "")
 SERVER_PY = "/app/backend/server.py"
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
@@ -192,21 +192,31 @@ class TestCcadAutoPlus:
         assert d.get("access_token"), d
         u = d["user"]
         assert u["plan"] == "plus", u
-        assert u["plan_source"] == "ccad", u
+        assert "plan_source" not in u, u
+        assert "full access" in d["registration_message"].lower(), d
 
     def test_ccad_2_register_clevelandclinicabudhabi_ae(self):
         email = f"TEST_ccad_{uuid.uuid4().hex[:8]}@clevelandclinicabudhabi.ae"
         d = _register(email)
         u = d["user"]
         assert u["plan"] == "plus", u
-        assert u["plan_source"] == "ccad", u
+        assert "plan_source" not in u, u
+        assert d.get("registration_message"), d
+
+    def test_ccad_2b_register_subdomain(self):
+        email = f"TEST_ccad_{uuid.uuid4().hex[:8]}@staff.ccad.ae"
+        d = _register(email)
+        assert d["user"]["plan"] == "plus", d
+        assert "plan_source" not in d["user"], d
+        assert d.get("registration_message"), d
 
     def test_ccad_3_non_ccad_stays_free(self):
         email = f"TEST_free_{uuid.uuid4().hex[:8]}@gmail.com"
         d = _register(email)
         u = d["user"]
         assert u["plan"] == "free", u
-        assert u["plan_source"] == "free", u
+        assert "plan_source" not in u, u
+        assert not d.get("registration_message"), d
 
     def test_ccad_4_ccad_user_can_export_xlsx(self):
         email = f"TEST_ccad_{uuid.uuid4().hex[:8]}@ccad.ae"
@@ -244,7 +254,7 @@ class TestCcadAutoPlus:
         assert r.status_code == 200
         me = r.json()
         assert me["plan"] == "plus"
-        assert me["plan_source"] == "ccad"
+        assert "plan_source" not in me
 
     def test_ccad_8_login_idempotently_upgrades_existing_free_ccad(self):
         """Insert directly into Mongo as plan=free + plan_source=free + CCAD
@@ -277,11 +287,12 @@ class TestCcadAutoPlus:
             assert r.status_code == 200, r.text
             u = r.json()["user"]
             assert u["plan"] == "plus", u
-            assert u["plan_source"] == "ccad", u
+            assert "plan_source" not in u, u
+            assert not r.json().get("registration_message"), r.json()
 
             fresh = db.users.find_one({"email": email.lower()})
             assert fresh["plan"] == "plus"
-            assert fresh["plan_source"] == "ccad"
+            assert fresh["plan_source"] == "included"
         finally:
             db.users.delete_one({"email": email.lower()})
 
@@ -314,12 +325,14 @@ class TestRegressionBilling:
         assert r.status_code == 401, r.text
 
     def test_reg3_webhook_valid_signature_activates_plus_for_paid_user(self):
+        if not ZIINA_SECRET:
+            pytest.skip("Set ZIINA_WEBHOOK_SECRET for the signed webhook integration test.")
         email = f"TEST_paid_{uuid.uuid4().hex[:8]}@gmail.com"
         reg = _register(email)
         tok = reg["access_token"]
         user_id = reg["user"]["id"]
         assert reg["user"]["plan"] == "free"
-        assert reg["user"]["plan_source"] == "free"
+        assert "plan_source" not in reg["user"]
 
         co = _post("/billing/checkout",
                    json_body={},
@@ -344,9 +357,9 @@ class TestRegressionBilling:
         assert d["activated"] is True, d
 
         me = _get("/auth/me",
-                  extra_headers={"Authorization": f"Bearer {tok}"}).json()
+                   extra_headers={"Authorization": f"Bearer {tok}"}).json()
         assert me["plan"] == "plus", me
-        assert me["plan_source"] == "paid", me
+        assert "plan_source" not in me, me
         assert me["id"] == user_id
 
         r2 = _post("/billing/webhook",

@@ -12,9 +12,7 @@ import { colors, radius, spacing } from "@/src/theme/colors";
 export default function SettingsScreen() {
   const { user, logout } = useAuth();
   const router = useRouter();
-  const source = user?.plan_source || (user?.plan === "plus" ? "paid" : "free");
   const isPlus = user?.plan === "plus";
-  const isCcad = source === "ccad";
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -38,9 +36,7 @@ export default function SettingsScreen() {
               <View
                 style={[
                   styles.smallBadge,
-                  isCcad
-                    ? styles.smallBadgeCcad
-                    : isPlus
+                  isPlus
                     ? styles.smallBadgePlus
                     : styles.smallBadgeFree,
                 ]}
@@ -48,18 +44,12 @@ export default function SettingsScreen() {
                 <Text
                   style={[
                     styles.smallBadgeText,
-                    isCcad
-                      ? styles.smallBadgeCcadText
-                      : isPlus
+                    isPlus
                       ? styles.smallBadgePlusText
                       : styles.smallBadgeFreeText,
                   ]}
                 >
-                  {isCcad
-                    ? "CCAD FREE ACCESS"
-                    : isPlus
-                    ? "PLUS $2.99/YEAR"
-                    : "FOXORY FREE"}
+                  {isPlus ? "FOXORY PLUS" : "FOXORY FREE"}
                 </Text>
               </View>
               {user?.is_superuser && (
@@ -100,46 +90,33 @@ export default function SettingsScreen() {
         {/* Plan */}
         <Text style={styles.sectionTitle}>Access</Text>
         <View style={styles.group}>
-          {isCcad ? (
-            <View style={styles.planRow} testID="ccad-access-row">
-              <Ionicons name="medical" size={18} color={colors.success} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.planTitle}>CCAD Free Access — active</Text>
-                <Text style={styles.planSub}>
-                  Full Foxory Plus features are complimentary for Cleveland
-                  Clinic Abu Dhabi staff.
-                </Text>
-              </View>
+          <TouchableOpacity
+            testID="upgrade-open-btn"
+            onPress={() => router.push("/(app)/upgrade")}
+            style={styles.planRow}
+            activeOpacity={0.75}
+          >
+            <Ionicons
+              name={isPlus ? "ribbon" : "sparkles"}
+              size={18}
+              color={colors.neonHover}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.planTitle}>
+                {isPlus ? "Foxory Plus — active" : "Upgrade to Foxory Plus"}
+              </Text>
+              <Text style={styles.planSub}>
+                {isPlus
+                  ? "Multi-month planning, XLSX export, email delivery."
+                  : "AED 10.99/month · XLSX exports, email sending, multi-month planning."}
+              </Text>
             </View>
-          ) : (
-            <TouchableOpacity
-              testID="upgrade-open-btn"
-              onPress={() => router.push("/(app)/upgrade")}
-              style={styles.planRow}
-              activeOpacity={0.75}
-            >
-              <Ionicons
-                name={isPlus ? "ribbon" : "sparkles"}
-                size={18}
-                color={colors.neonHover}
-              />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.planTitle}>
-                  {isPlus ? "Foxory Plus — active" : "Upgrade to Foxory Plus"}
-                </Text>
-                <Text style={styles.planSub}>
-                  {isPlus
-                    ? "Multi-month planning, XLSX export, email delivery."
-                    : "AED 10.99/year · XLSX exports, email sending, multi-month planning."}
-                </Text>
-              </View>
-              <Ionicons
-                name="chevron-forward"
-                size={16}
-                color={colors.textMuted}
-              />
-            </TouchableOpacity>
-          )}
+            <Ionicons
+              name="chevron-forward"
+              size={16}
+              color={colors.textMuted}
+            />
+          </TouchableOpacity>
         </View>
 
         {/* Actions */}
@@ -278,10 +255,6 @@ const styles = StyleSheet.create({
     borderColor: colors.neon,
     backgroundColor: "rgba(168, 85, 247, 0.22)",
   },
-  smallBadgeCcad: {
-    borderColor: "rgba(74, 222, 128, 0.45)",
-    backgroundColor: "rgba(74, 222, 128, 0.14)",
-  },
   smallBadgeAdmin: {
     borderColor: "rgba(74, 222, 128, 0.4)",
     backgroundColor: "rgba(74, 222, 128, 0.12)",
@@ -293,7 +266,6 @@ const styles = StyleSheet.create({
   },
   smallBadgeFreeText: { color: colors.textAccent },
   smallBadgePlusText: { color: colors.neonHover },
-  smallBadgeCcadText: { color: colors.success },
   smallBadgeAdminText: { color: colors.success },
   sectionTitle: {
     color: colors.textMuted,

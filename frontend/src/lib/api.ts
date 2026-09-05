@@ -9,7 +9,6 @@ export type AuthUser = {
   display_name?: string | null;
   is_superuser: boolean;
   plan: "free" | "plus" | string;
-  plan_source?: "free" | "ccad" | "paid" | string;
   created_at: string;
   plus_expires_at?: string | null;
 };
@@ -32,6 +31,7 @@ export type LoginResponse = {
   access_token: string;
   token_type: string;
   user: AuthUser;
+  registration_message?: string | null;
 };
 
 export type ApiError = Error & { status?: number; code?: string };

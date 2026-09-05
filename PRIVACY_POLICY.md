@@ -29,8 +29,8 @@ We do **not** collect:
 
 - To let you sign in, create and manage your draft shift plans.
 - To generate XLSX and email exports of your own plan, on your device.
-- To grant "CCAD Free Access" when your account email ends in
-  `@ccad.ae` or `@clevelandclinicabudhabi.ae`.
+- To determine whether an account is eligible for included access based on its
+  verified organization email domain.
 - To process paid upgrades via Ziina when you tap **Upgrade to Plus**.
 
 We do **not** sell your personal data, share it with data brokers, or use it for
@@ -54,7 +54,7 @@ advertising.
 
 ## 5. Third-party services
 
-- **Ziina Payment Services LLC** — hosted checkout for the AED 10.99/year Plus
+- **Ziina Payment Services LLC** — hosted checkout for the AED 10.99/month Plus
   plan. See [ziina.com/legal](https://ziina.com/legal).
 
 That is the complete list. We do not use analytics SDKs, ad networks, or

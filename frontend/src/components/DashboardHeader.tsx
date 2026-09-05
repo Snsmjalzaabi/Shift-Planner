@@ -16,15 +16,8 @@ export function DashboardHeader({ showBack, title }: Props) {
   const router = useRouter();
 
   const plan = user?.plan === "plus" ? "plus" : "free";
-  const source = (user?.plan_source as string) || (plan === "plus" ? "paid" : "free");
-  const badgeLabel =
-    source === "ccad"
-      ? "CCAD Free Access"
-      : source === "paid"
-      ? "Plus $2.99/year"
-      : "Foxory Free";
-  const badgeVariant: "plus" | "free" | "ccad" =
-    source === "ccad" ? "ccad" : plan === "plus" ? "plus" : "free";
+  const badgeLabel = plan === "plus" ? "Foxory Plus" : "Foxory Free";
+  const badgeVariant: "plus" | "free" = plan;
 
   return (
     <View testID="dashboard-header" style={styles.container}>
@@ -60,8 +53,6 @@ export function DashboardHeader({ showBack, title }: Props) {
             styles.badge,
             badgeVariant === "plus"
               ? styles.badgePlus
-              : badgeVariant === "ccad"
-              ? styles.badgeCcad
               : styles.badgeFree,
           ]}
         >
@@ -69,16 +60,12 @@ export function DashboardHeader({ showBack, title }: Props) {
             name={
               badgeVariant === "plus"
                 ? "sparkles"
-                : badgeVariant === "ccad"
-                ? "medical"
                 : "shield-checkmark"
             }
             size={11}
             color={
               badgeVariant === "plus"
                 ? colors.neonHover
-                : badgeVariant === "ccad"
-                ? colors.success
                 : colors.textAccent
             }
             style={{ marginRight: 4 }}
@@ -88,8 +75,6 @@ export function DashboardHeader({ showBack, title }: Props) {
               styles.badgeText,
               badgeVariant === "plus"
                 ? styles.badgePlusText
-                : badgeVariant === "ccad"
-                ? styles.badgeCcadText
                 : styles.badgeFreeText,
             ]}
           >
@@ -165,10 +150,6 @@ const styles = StyleSheet.create({
     borderColor: colors.neon,
     backgroundColor: "rgba(168, 85, 247, 0.22)",
   },
-  badgeCcad: {
-    borderColor: "rgba(74, 222, 128, 0.45)",
-    backgroundColor: "rgba(74, 222, 128, 0.14)",
-  },
   badgeText: {
     fontSize: 10,
     fontWeight: "800",
@@ -180,8 +161,5 @@ const styles = StyleSheet.create({
   },
   badgePlusText: {
     color: colors.neonHover,
-  },
-  badgeCcadText: {
-    color: colors.success,
   },
 });

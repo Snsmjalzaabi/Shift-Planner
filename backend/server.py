@@ -59,8 +59,8 @@ ZIINA_TEST_MODE = os.environ.get("ZIINA_TEST_MODE", "true").strip().lower() == "
 ZIINA_PRICE_FILS = int(os.environ.get("ZIINA_PRICE_FILS", "1099"))  # 10.99 AED
 ZIINA_CURRENCY = os.environ.get("ZIINA_CURRENCY", "AED").strip().upper()
 ZIINA_WEBHOOK_SECRET = os.environ.get("ZIINA_WEBHOOK_SECRET", "").strip()
-PLUS_PLAN_ID = "plus_yearly"
-PLUS_DURATION_DAYS = 365
+PLUS_PLAN_ID = "plus_monthly"
+PLUS_DURATION_DAYS = 30
 
 # CORS lockdown (P3): explicit allowlist, no wildcard.
 _default_origins = "http://localhost:8081,http://localhost:19006,http://localhost:3000"
@@ -70,21 +70,24 @@ ALLOWED_ORIGINS = [
     if o.strip()
 ]
 
-# CCAD free access: users whose email ends in one of these domains get Plus
-# automatically at no charge, badged as "CCAD FREE ACCESS".
-CCAD_EMAIL_DOMAINS = tuple(
+# Private organization access. Matching accounts receive Plus automatically;
+# the organization names and domains are never exposed in general app UI.
+INCLUDED_ACCESS_DOMAINS = tuple(
     d.strip().lower()
-    for d in os.environ.get(
-        "CCAD_EMAIL_DOMAINS",
-        "ccad.ae,clevelandclinicabudhabi.ae",
-    ).split(",")
+    for d in os.environ.get("INCLUDED_ACCESS_DOMAINS", "").split(",")
     if d.strip()
 )
 
 
-def _is_ccad_email(email: str) -> bool:
+def _has_included_access(email: str) -> bool:
     e = (email or "").strip().lower()
-    return any(e.endswith("@" + d) for d in CCAD_EMAIL_DOMAINS)
+    if "@" not in e:
+        return False
+    domain = e.rsplit("@", 1)[1]
+    return any(
+        domain == d or domain.endswith("." + d)
+        for d in INCLUDED_ACCESS_DOMAINS
+    )
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -167,6 +170,47 @@ def decode_access_token(token: str) -> dict[str, Any]:
 bearer_scheme = HTTPBearer(auto_error=True)
 
 
+def _as_utc(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return (
+            value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc)
+        )
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return (
+                parsed.replace(tzinfo=timezone.utc)
+                if parsed.tzinfo is None
+                else parsed.astimezone(timezone.utc)
+            )
+        except ValueError:
+            return None
+    return None
+
+
+async def _expire_paid_access_if_needed(user: dict[str, Any]) -> dict[str, Any]:
+    """Downgrade an expired paid account while leaving permanent grants intact."""
+    expires_at = _as_utc(user.get("plus_expires_at"))
+    if (
+        user.get("plan") == "plus"
+        and user.get("plan_source") == "paid"
+        and expires_at is not None
+        and expires_at <= datetime.now(timezone.utc)
+        and not user.get("is_superuser")
+    ):
+        now = datetime.now(timezone.utc)
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"plan": "free", "plan_source": "free", "updated_at": now}},
+        )
+        user["plan"] = "free"
+        user["plan_source"] = "free"
+        user["updated_at"] = now
+    return user
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> dict[str, Any]:
@@ -183,7 +227,7 @@ async def get_current_user(
     user = await db.users.find_one({"id": user_id}, {"_id": 0, "hashed_password": 0})
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-    return user
+    return await _expire_paid_access_if_needed(user)
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +248,7 @@ class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: dict[str, Any]
+    registration_message: Optional[str] = None
 
 
 SHIFT_TYPES = {"day", "night", "on_call", "off"}
@@ -276,7 +321,7 @@ async def seed_superuser() -> None:
 
 async def seed_reviewer() -> None:
     """Seed an App Store / Play Store reviewer account that starts on Plus
-    (plan_source='paid') so reviewers can exercise every gated feature without
+    so reviewers can exercise every gated feature without
     paying. Never overwrites the password on subsequent boots."""
     if not REVIEWER_EMAIL or not REVIEWER_PASSWORD:
         return
@@ -291,9 +336,9 @@ async def seed_reviewer() -> None:
                 "hashed_password": hash_password(REVIEWER_PASSWORD),
                 "is_superuser": False,
                 "plan": "plus",
-                "plan_source": "paid",
+                "plan_source": "reviewer",
                 "plus_activated_at": now,
-                "plus_expires_at": now + timedelta(days=PLUS_DURATION_DAYS),
+                "plus_expires_at": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -302,11 +347,10 @@ async def seed_reviewer() -> None:
     else:
         set_doc: dict[str, Any] = {
             "plan": "plus",
-            "plan_source": "paid",
+            "plan_source": "reviewer",
+            "plus_expires_at": None,
             "updated_at": now,
         }
-        if not existing.get("plus_expires_at"):
-            set_doc["plus_expires_at"] = now + timedelta(days=PLUS_DURATION_DAYS)
         await db.users.update_one({"_id": existing["_id"]}, {"$set": set_doc})
         logger.info("Reviewer account %s already present; plan re-affirmed", REVIEWER_EMAIL)
 
@@ -364,7 +408,6 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
         "display_name": user.get("display_name"),
         "is_superuser": user.get("is_superuser", False),
         "plan": user.get("plan", "free"),
-        "plan_source": user.get("plan_source", "free"),
         "created_at": user["created_at"].isoformat()
         if isinstance(user["created_at"], datetime)
         else user["created_at"],
@@ -372,12 +415,13 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _apply_ccad_upgrade_if_needed(user_doc: dict[str, Any]) -> dict[str, Any]:
-    """Idempotently grant Plus (as `plan_source='ccad'`) to CCAD accounts.
-    Never downgrades — a user who already paid stays on `paid`."""
-    if not _is_ccad_email(user_doc.get("email", "")):
+async def _apply_included_access_if_needed(
+    user_doc: dict[str, Any],
+) -> dict[str, Any]:
+    """Idempotently grant Plus to configured organization accounts."""
+    if not _has_included_access(user_doc.get("email", "")):
         return user_doc
-    if user_doc.get("plan_source") == "ccad" and user_doc.get("plan") == "plus":
+    if user_doc.get("plan") == "plus" and user_doc.get("plan_source") != "paid":
         return user_doc
     if user_doc.get("plan_source") == "paid":
         return user_doc  # they already paid — keep the paid tag
@@ -387,15 +431,15 @@ async def _apply_ccad_upgrade_if_needed(user_doc: dict[str, Any]) -> dict[str, A
         {
             "$set": {
                 "plan": "plus",
-                "plan_source": "ccad",
+                "plan_source": "included",
                 "plus_activated_at": user_doc.get("plus_activated_at") or now,
                 "updated_at": now,
             }
         },
     )
     user_doc["plan"] = "plus"
-    user_doc["plan_source"] = "ccad"
-    logger.info("CCAD auto-upgrade applied to %s", user_doc["email"])
+    user_doc["plan_source"] = "included"
+    logger.info("Included organization access applied to user %s", user_doc["id"])
     return user_doc
 
 
@@ -413,9 +457,9 @@ async def register(body: RegisterRequest):
             detail="Registration could not be completed. Please try again or sign in.",
         )
     now = datetime.now(timezone.utc)
-    ccad = _is_ccad_email(body.email)
-    plan = "plus" if ccad else "free"
-    plan_source = "ccad" if ccad else "free"
+    included_access = _has_included_access(body.email)
+    plan = "plus" if included_access else "free"
+    plan_source = "included" if included_access else "free"
     user_doc = {
         "id": str(uuid.uuid4()),
         "email": body.email,
@@ -424,13 +468,23 @@ async def register(body: RegisterRequest):
         "is_superuser": False,
         "plan": plan,
         "plan_source": plan_source,
-        "plus_activated_at": now if ccad else None,
+        "plus_activated_at": now if included_access else None,
         "created_at": now,
         "updated_at": now,
     }
     await db.users.insert_one(user_doc)
     token = create_access_token(user_doc["id"], {"email": user_doc["email"]})
-    return {"access_token": token, "token_type": "bearer", "user": _public_user(user_doc)}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": _public_user(user_doc),
+        "registration_message": (
+            "Thank you for supporting Foxory Shift Calendar. "
+            "Please enjoy full access to the app, completely free."
+            if included_access
+            else None
+        ),
+    }
 
 
 @api_router.post(
@@ -442,9 +496,9 @@ async def login(body: LoginRequest):
     user = await db.users.find_one({"email": body.email})
     if not user or not verify_password(body.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    # Idempotently apply CCAD upgrade on every login so a paid-then-CCAD flip
-    # (or a domain policy change) takes effect without manual DB work.
-    user = await _apply_ccad_upgrade_if_needed(user)
+    user = await _expire_paid_access_if_needed(user)
+    # Reapply private organization eligibility in case the domain policy changed.
+    user = await _apply_included_access_if_needed(user)
     token = create_access_token(user["id"], {"email": user["email"]})
     return {"access_token": token, "token_type": "bearer", "user": _public_user(user)}
 
@@ -497,7 +551,7 @@ def _require_plus(user: dict[str, Any]) -> None:
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
                 "code": "plus_required",
-                "message": "This feature is available on the Plus $2.99/year plan.",
+                "message": "This feature is available on the Plus $2.99/month plan.",
             },
         )
 
@@ -556,7 +610,7 @@ async def update_plan(
 def _price_display() -> str:
     whole = ZIINA_PRICE_FILS // 100
     fract = ZIINA_PRICE_FILS % 100
-    return f"{ZIINA_CURRENCY} {whole}.{fract:02d}/year"
+    return f"{ZIINA_CURRENCY} {whole}.{fract:02d}/month"
 
 
 @api_router.get("/billing/config")
@@ -573,8 +627,8 @@ async def billing_config():
                 "id": PLUS_PLAN_ID,
                 "name": "Foxory Plus",
                 "price_display": _price_display(),
-                "badge_display": "Plus $2.99/year",
-                "period": "year",
+                "badge_display": "Plus $2.99/month",
+                "period": "month",
                 "features": [
                     "XLSX export with Plan Summary + Shift Details",
                     "Attach XLSX to email exports",

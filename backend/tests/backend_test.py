@@ -14,9 +14,14 @@ BASE_URL = os.environ["EXPO_PUBLIC_BACKEND_URL"].rstrip("/") if os.environ.get(
 ) else "https://nurse-planner-5.preview.emergentagent.com"
 API = f"{BASE_URL}/api"
 
-SUPER_EMAIL = "Sultan942002@yahoo.com"
-SUPER_PASS = "S.nsmjalzaabi1"
+SUPER_EMAIL = os.environ.get("TEST_SUPERUSER_EMAIL", "")
+SUPER_PASS = os.environ.get("TEST_SUPERUSER_PASSWORD", "")
 MONTH = "2026-03"
+
+pytestmark = pytest.mark.skipif(
+    not SUPER_EMAIL or not SUPER_PASS,
+    reason="Set TEST_SUPERUSER_EMAIL and TEST_SUPERUSER_PASSWORD for integration tests.",
+)
 
 session = requests.Session()
 session.headers.update({"Content-Type": "application/json"})

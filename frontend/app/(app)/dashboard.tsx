@@ -38,6 +38,13 @@ export default function DashboardScreen() {
 
   const monthKey = ym(year, month0);
   const grid = useMemo(() => buildMonthGrid(year, month0), [year, month0]);
+  const weeks = useMemo(
+    () =>
+      Array.from({ length: grid.length / 7 }, (_, index) =>
+        grid.slice(index * 7, index * 7 + 7),
+      ),
+    [grid],
+  );
 
   const shiftsByDate = useMemo(() => {
     const map = new Map<string, Shift[]>();
@@ -173,64 +180,68 @@ export default function DashboardScreen() {
           </View>
         ) : (
           <View style={styles.gridWrap} testID="calendar-grid">
-            {grid.map((cell) => {
-              const dayShifts = shiftsByDate.get(cell.date) || [];
-              const isToday = cell.date === today;
-              return (
-                <TouchableOpacity
-                  key={cell.date}
-                  testID={`calendar-cell-${cell.date}`}
-                  activeOpacity={0.75}
-                  onPress={() => cell.inMonth && setSelectedDate(cell.date)}
-                  style={[
-                    styles.cell,
-                    !cell.inMonth && styles.cellOutside,
-                    isToday && styles.cellToday,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.cellNum,
-                      !cell.inMonth && styles.cellNumOutside,
-                      isToday && styles.cellNumToday,
-                    ]}
-                  >
-                    {cell.dayNum}
-                  </Text>
-                  <View style={styles.chipStack}>
-                    {dayShifts.slice(0, 2).map((s) => {
-                      const th = shiftTheme(s.type);
-                      return (
-                        <View
-                          key={s.id}
-                          testID={`shift-chip-${s.id}`}
-                          style={[
-                            styles.chip,
-                            {
-                              backgroundColor: th.bg,
-                              borderColor: th.border,
-                              opacity: s.is_draft ? 1 : 0.85,
-                            },
-                          ]}
-                        >
-                          <Text
-                            style={[styles.chipText, { color: th.text }]}
-                            numberOfLines={1}
-                          >
-                            {th.label}
-                          </Text>
-                        </View>
-                      );
-                    })}
-                    {dayShifts.length > 2 && (
-                      <Text style={styles.moreText}>
-                        +{dayShifts.length - 2}
+            {weeks.map((week, weekIndex) => (
+              <View key={`week-${weekIndex}`} style={styles.gridRow}>
+                {week.map((cell) => {
+                  const dayShifts = shiftsByDate.get(cell.date) || [];
+                  const isToday = cell.date === today;
+                  return (
+                    <TouchableOpacity
+                      key={cell.date}
+                      testID={`calendar-cell-${cell.date}`}
+                      activeOpacity={0.75}
+                      onPress={() => cell.inMonth && setSelectedDate(cell.date)}
+                      style={[
+                        styles.cell,
+                        !cell.inMonth && styles.cellOutside,
+                        isToday && styles.cellToday,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.cellNum,
+                          !cell.inMonth && styles.cellNumOutside,
+                          isToday && styles.cellNumToday,
+                        ]}
+                      >
+                        {cell.dayNum}
                       </Text>
-                    )}
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
+                      <View style={styles.chipStack}>
+                        {dayShifts.slice(0, 2).map((s) => {
+                          const th = shiftTheme(s.type);
+                          return (
+                            <View
+                              key={s.id}
+                              testID={`shift-chip-${s.id}`}
+                              style={[
+                                styles.chip,
+                                {
+                                  backgroundColor: th.bg,
+                                  borderColor: th.border,
+                                  opacity: s.is_draft ? 1 : 0.85,
+                                },
+                              ]}
+                            >
+                              <Text
+                                style={[styles.chipText, { color: th.text }]}
+                                numberOfLines={1}
+                              >
+                                {th.label}
+                              </Text>
+                            </View>
+                          );
+                        })}
+                        {dayShifts.length > 2 && (
+                          <Text style={styles.moreText}>
+                            +{dayShifts.length - 2}
+                          </Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ))}
           </View>
         )}
 
@@ -372,17 +383,20 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   gridWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
     backgroundColor: colors.border,
     borderRadius: radius.lg,
     padding: 1,
     gap: 1,
     overflow: "hidden",
   },
+  gridRow: {
+    flexDirection: "row",
+    gap: 1,
+  },
   cell: {
-    width: `${100 / 7}%`,
-    aspectRatio: 0.85,
+    flex: 1,
+    minWidth: 0,
+    aspectRatio: 0.94,
     backgroundColor: colors.bg,
     padding: 4,
     gap: 2,

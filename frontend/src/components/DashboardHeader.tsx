@@ -1,7 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { FoxoryLogo } from "@/src/components/FoxoryLogo";
 import { useAuth } from "@/src/context/AuthContext";
@@ -13,7 +12,6 @@ type Props = {
 };
 
 export function DashboardHeader({ showBack, title }: Props) {
-  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const router = useRouter();
 
@@ -29,13 +27,7 @@ export function DashboardHeader({ showBack, title }: Props) {
     source === "ccad" ? "ccad" : plan === "plus" ? "plus" : "free";
 
   return (
-    <View
-      testID="dashboard-header"
-      style={[
-        styles.container,
-        { paddingTop: insets.top + spacing.sm },
-      ]}
-    >
+    <View testID="dashboard-header" style={styles.container}>
       <View style={styles.row}>
         <View style={styles.left}>
           {showBack ? (
@@ -50,7 +42,7 @@ export function DashboardHeader({ showBack, title }: Props) {
           ) : (
             <FoxoryLogo size="sm" />
           )}
-          <View>
+          <View style={styles.titleBlock}>
             <Text style={styles.appName} numberOfLines={1}>
               {title || "Foxory Shift Calendar"}
             </Text>
@@ -114,6 +106,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
+    paddingTop: spacing.md,
     paddingBottom: spacing.md,
     paddingHorizontal: spacing.lg,
   },
@@ -126,7 +119,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
+    flex: 1,
     flexShrink: 1,
+  },
+  titleBlock: {
+    flex: 1,
+    minWidth: 0,
   },
   backBtn: {
     width: 32,
@@ -157,6 +155,7 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: radius.pill,
     borderWidth: 1,
+    flexShrink: 0,
   },
   badgeFree: {
     borderColor: "rgba(168, 85, 247, 0.35)",

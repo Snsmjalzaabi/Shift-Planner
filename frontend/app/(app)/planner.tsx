@@ -270,24 +270,34 @@ export default function PlannerScreen() {
           />
         }
       >
-        <View style={styles.titleRow}>
-          <View>
-            <Text style={styles.eyebrow}>Draft Planner</Text>
-            <Text style={styles.title}>Plan &amp; Export</Text>
-          </View>
-          <View style={styles.monthBadge}>
-            <TouchableOpacity onPress={() => shiftMonth(-1)} testID="planner-prev-month">
-              <Ionicons name="chevron-back" size={16} color={colors.textPrimary} />
-            </TouchableOpacity>
-            <Text style={styles.monthText}>{monthLabel(y, m - 1)}</Text>
-            <TouchableOpacity onPress={() => shiftMonth(1)} testID="planner-next-month">
-              <Ionicons
-                name="chevron-forward"
-                size={16}
-                color={colors.textPrimary}
-              />
-            </TouchableOpacity>
-          </View>
+        <View style={styles.headingBlock}>
+          <Text style={styles.eyebrow}>Shift Planner</Text>
+          <Text style={styles.title}>Plan &amp; Export</Text>
+          <Text style={styles.subtitle}>
+            Plan draft shifts, compare them with your calendar, and export the schedule when it is ready.
+          </Text>
+        </View>
+
+        <View style={styles.monthBadge}>
+          <TouchableOpacity
+            onPress={() => shiftMonth(-1)}
+            testID="planner-prev-month"
+            style={styles.monthButton}
+          >
+            <Ionicons name="chevron-back" size={18} color={colors.textPrimary} />
+          </TouchableOpacity>
+          <Text style={styles.monthText}>{monthLabel(y, m - 1)}</Text>
+          <TouchableOpacity
+            onPress={() => shiftMonth(1)}
+            testID="planner-next-month"
+            style={styles.monthButton}
+          >
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={colors.textPrimary}
+            />
+          </TouchableOpacity>
         </View>
 
         {/* Draft reminder */}
@@ -763,10 +773,7 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
     paddingBottom: spacing.xxl,
   },
-  titleRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
+  headingBlock: {
     marginBottom: spacing.md,
   },
   eyebrow: {
@@ -778,26 +785,41 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.textPrimary,
-    fontSize: 22,
-    fontWeight: "800",
+    fontSize: 26,
+    fontWeight: "900",
     marginTop: 2,
+  },
+  subtitle: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: spacing.xs,
+    maxWidth: 480,
   },
   monthBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: radius.pill,
+    justifyContent: "space-between",
+    padding: 4,
+    borderRadius: radius.md,
     backgroundColor: colors.surface,
     borderColor: colors.border,
     borderWidth: 1,
+    marginBottom: spacing.md,
+  },
+  monthButton: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.sm,
+    backgroundColor: colors.elevated,
   },
   monthText: {
+    flex: 1,
     color: colors.textPrimary,
-    fontSize: 12,
-    fontWeight: "700",
-    minWidth: 80,
+    fontSize: 14,
+    fontWeight: "800",
     textAlign: "center",
   },
   reminder: {

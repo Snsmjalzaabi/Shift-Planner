@@ -89,6 +89,12 @@ export default function AppTabsLayout() {
           href: null,
         }}
       />
+      <Tabs.Screen
+        name="legal"
+        options={{
+          href: null,
+        }}
+      />
     </Tabs>
   );
 }

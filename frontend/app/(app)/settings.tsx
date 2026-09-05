@@ -92,7 +92,7 @@ export default function SettingsScreen() {
           <Row
             icon="code-slash-outline"
             label="Version"
-            value="1.0.0 MVP"
+            value="1.0.1"
             last
           />
         </View>
@@ -145,6 +145,31 @@ export default function SettingsScreen() {
         {/* Actions */}
         <Text style={styles.sectionTitle}>Account</Text>
         <View style={styles.group}>
+          <TouchableOpacity
+            testID="settings-open-legal"
+            onPress={() => router.push("/(app)/legal")}
+            style={[styles.actionRow, styles.rowDivider]}
+            activeOpacity={0.75}
+          >
+            <View style={styles.actionIconWrap}>
+              <Ionicons
+                name="shield-checkmark-outline"
+                size={16}
+                color={colors.textAccent}
+              />
+            </View>
+            <View style={styles.actionCopy}>
+              <Text style={styles.actionLabel}>Legal &amp; Support</Text>
+              <Text style={styles.actionDescription}>
+                Privacy, terms, contact, and account controls
+              </Text>
+            </View>
+            <Ionicons
+              name="chevron-forward"
+              size={16}
+              color={colors.textMuted}
+            />
+          </TouchableOpacity>
           <TouchableOpacity
             testID="logout-btn"
             onPress={logout}
@@ -210,7 +235,7 @@ const styles = StyleSheet.create({
   body: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
-    paddingBottom: spacing.xxl,
+    paddingBottom: 48,
   },
   profileCard: {
     flexDirection: "row",
@@ -354,10 +379,19 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(248, 113, 113, 0.12)",
   },
   actionLabel: {
-    flex: 1,
     color: colors.textPrimary,
     fontSize: 14,
     fontWeight: "700",
+  },
+  actionCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  actionDescription: {
+    color: colors.textSecondary,
+    fontSize: 11.5,
+    lineHeight: 17,
+    marginTop: 2,
   },
   footer: {
     alignItems: "center",

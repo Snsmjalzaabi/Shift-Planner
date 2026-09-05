@@ -2,7 +2,7 @@
   "expo": {
     "name": "Foxory Shift Calendar",
     "slug": "foxory-shift-calendar",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "foxory",
@@ -19,7 +19,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.foxory.shiftcalendar",
-      "versionCode": 6
+      "versionCode": 7
     },
     "web": {
       "bundler": "metro",

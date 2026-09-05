@@ -92,7 +92,7 @@ export default function SettingsScreen() {
           <Row
             icon="code-slash-outline"
             label="Version"
-            value="1.0.1"
+            value="1.0.2"
             last
           />
         </View>

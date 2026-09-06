@@ -19,6 +19,7 @@ import bcrypt
 import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -382,6 +383,129 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Hmac-Signature"],
 )
 api_router = APIRouter(prefix="/api")
+
+
+def _public_page(title: str, body: str) -> HTMLResponse:
+    """Small public pages used by the app stores and in-app support links."""
+    safe_title = html_escape.escape(title)
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title} | Foxory Shift Calendar</title>
+  <style>
+    :root {{ color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }}
+    body {{ margin: 0; background: #090514; color: #f7f3ff; line-height: 1.65; }}
+    main {{ width: min(760px, calc(100% - 40px)); margin: 0 auto; padding: 56px 0 72px; }}
+    .brand {{ color: #c084fc; font-size: .82rem; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }}
+    h1 {{ margin: .4rem 0 .6rem; font-size: clamp(2rem, 7vw, 3rem); line-height: 1.1; }}
+    h2 {{ margin-top: 2rem; color: #e9d5ff; font-size: 1.15rem; }}
+    p, li {{ color: #c8bfd5; }}
+    a {{ color: #c084fc; }}
+    nav {{ margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid #312047; }}
+    nav a {{ margin-right: 1rem; }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">Foxory Shift Calendar</div>
+    <h1>{safe_title}</h1>
+    <p>Last updated September 2026</p>
+    {body}
+    <nav aria-label="Legal and support">
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+      <a href="/support">Support</a>
+    </nav>
+  </main>
+</body>
+</html>""",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+async def privacy_page():
+    return _public_page(
+        "Privacy Policy",
+        """
+        <h2>Information we collect</h2>
+        <ul>
+          <li>Your email address, display name, and securely hashed password.</li>
+          <li>The shifts, notes, and schedule details you choose to save.</li>
+          <li>Subscription status and transaction identifiers, but never card details.</li>
+          <li>Limited server logs used for reliability and abuse prevention.</li>
+        </ul>
+        <h2>How we use information</h2>
+        <p>We use this information to provide your account, synchronize your schedule,
+        generate exports, confirm Plus access, and support account deletion. We do not
+        sell personal information or use advertising trackers.</p>
+        <h2>Payments</h2>
+        <p>Apple subscriptions are processed by the App Store and validated through
+        RevenueCat. Other supported platforms may use their own approved payment
+        provider. Foxory never receives your complete payment-card details.</p>
+        <h2>Photos and files</h2>
+        <p>Schedule photos and Excel files are selected only when you request an import.
+        Imported results are shown for review before any shifts are saved.</p>
+        <h2>Retention and your choices</h2>
+        <p>Your account and schedules remain until you delete them. You can permanently
+        delete your account from Legal &amp; Support in Settings.</p>
+        <h2>Contact</h2>
+        <p>Privacy: <a href="mailto:privacy@foxory.info">privacy@foxory.info</a><br>
+        Support: <a href="mailto:support@foxory.info">support@foxory.info</a></p>
+        """,
+    )
+
+
+@app.get("/terms", response_class=HTMLResponse, include_in_schema=False)
+async def terms_page():
+    return _public_page(
+        "Terms of Service",
+        """
+        <h2>Using Foxory</h2>
+        <p>Foxory Shift Calendar is a personal planning tool. Keep your sign-in details
+        secure and use the app only for lawful purposes.</p>
+        <h2>Schedule accuracy</h2>
+        <p>Imported and manually entered schedules must be reviewed by you. Foxory is
+        not a clinical staffing system, employer record, or substitute for your official
+        workplace schedule.</p>
+        <h2>Foxory Plus</h2>
+        <p>On iPhone and iPad, Plus is an auto-renewing monthly subscription billed to
+        your Apple ID. The App Store displays the final local price before purchase. It
+        renews unless canceled at least 24 hours before the end of the current period.
+        You can manage or cancel it in your App Store account settings. Restore Purchases
+        is available on the Upgrade screen.</p>
+        <h2>Availability</h2>
+        <p>We aim to keep the service available, but temporary interruptions can occur.
+        The app is provided without a guarantee that it will meet every scheduling or
+        regulatory requirement.</p>
+        <h2>Account termination</h2>
+        <p>You may delete your account in Settings. We may suspend accounts used for
+        abuse, fraud, or attempts to interfere with the service.</p>
+        <h2>Contact</h2>
+        <p><a href="mailto:support@foxory.info">support@foxory.info</a></p>
+        """,
+    )
+
+
+@app.get("/support", response_class=HTMLResponse, include_in_schema=False)
+async def support_page():
+    return _public_page(
+        "Support",
+        """
+        <p>For help with Foxory Shift Calendar, account access, schedule imports,
+        exports, or subscriptions, email
+        <a href="mailto:support@foxory.info">support@foxory.info</a>.</p>
+        <h2>Account controls</h2>
+        <p>You can restore App Store purchases from the Upgrade screen and permanently
+        delete your account from Legal &amp; Support in Settings.</p>
+        <h2>Schedule imports</h2>
+        <p>Photo and Excel imports always open a review screen. Confirm dates and shift
+        codes before saving; uncertain results are never saved automatically.</p>
+        """,
+    )
 
 
 # ---------------------------------------------------------------------------

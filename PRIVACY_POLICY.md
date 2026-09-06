@@ -15,7 +15,8 @@ Google Play Console listings.
   (bcrypt) so you can sign in.
 - **Shift plan data**: the shifts (date, type, times, location, note) that you
   create in the app.
-- **Payment metadata**: a Ziina `payment_intent_id`, amount, currency and status.
+- **Payment metadata**: a Ziina payment intent or App Store subscription status,
+  amount, currency and status.
   We **never** see or store your card number, CVV, or bank details — those go
   directly to Ziina's PCI-DSS certified checkout.
 - **Diagnostic data**: standard server logs (timestamp, request path, HTTP
@@ -31,7 +32,7 @@ We do **not** collect:
 - To generate XLSX and email exports of your own plan, on your device.
 - To determine whether an account is eligible for included access based on its
   verified organization email domain.
-- To process paid upgrades via Ziina when you tap **Upgrade to Plus**.
+- To process paid upgrades through the approved payment provider for your platform.
 
 We do **not** sell your personal data, share it with data brokers, or use it for
 advertising.
@@ -54,8 +55,11 @@ advertising.
 
 ## 5. Third-party services
 
-- **Ziina Payment Services LLC** — hosted checkout for the AED 10.99/month Plus
-  plan. See [ziina.com/legal](https://ziina.com/legal).
+- **Apple App Store** — processes iPhone and iPad subscriptions.
+- **RevenueCat** — validates App Store subscription status without receiving your
+  complete card details.
+- **Ziina Payment Services LLC** — hosted checkout on supported non-App-Store
+  platforms. See [ziina.com/legal](https://ziina.com/legal).
 
 That is the complete list. We do not use analytics SDKs, ad networks, or
 crash-reporting SDKs in production builds.

@@ -14,10 +14,19 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import type { PurchasesPackage } from "react-native-purchases";
 
 import { CreatorSignature } from "@/src/components/CreatorSignature";
 import { FoxoryLogo } from "@/src/components/FoxoryLogo";
 import { useAuth } from "@/src/context/AuthContext";
+import {
+  getAppleMonthlyPackage,
+  hasApplePlus,
+  isApplePurchaseConfigured,
+  purchaseApplePackage,
+  restoreApplePurchases,
+  wasApplePurchaseCancelled,
+} from "@/src/lib/applePurchases";
 import { api } from "@/src/lib/api";
 import { colors, radius, spacing } from "@/src/theme/colors";
 
@@ -30,12 +39,14 @@ export default function UpgradeScreen() {
   const [loading, setLoading] = useState(true);
   const [checkingOut, setCheckingOut] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const [applePackage, setApplePackage] = useState<PurchasesPackage | null>(null);
   const [status, setStatus] = useState<{
     kind: "idle" | "pending" | "success" | "canceled" | "error";
     message?: string;
   }>({ kind: "idle" });
 
-  const isPlus = user?.plan === "plus";
+  const isApple = Platform.OS === "ios";
+  const isPlus = user?.plan === "plus" || !!user?.is_superuser;
 
   useEffect(() => {
     (async () => {
@@ -50,11 +61,47 @@ export default function UpgradeScreen() {
     })();
   }, []);
 
+  useEffect(() => {
+    if (!isApple || !user?.id || !isApplePurchaseConfigured()) return;
+    getAppleMonthlyPackage(user.id)
+      .then(setApplePackage)
+      .catch(() => {
+        setStatus({
+          kind: "error",
+          message: "The App Store subscription is temporarily unavailable.",
+        });
+      });
+  }, [isApple, user?.id]);
+
   const doUpgrade = useCallback(async () => {
-    if (!token) return;
+    if (!token || !user) return;
     setCheckingOut(true);
-    setStatus({ kind: "pending", message: "Opening Ziina checkout…" });
+    setStatus({
+      kind: "pending",
+      message: isApple ? "Opening the App Store…" : "Opening Ziina checkout…",
+    });
     try {
+      if (isApple) {
+        if (!applePackage) {
+          throw new Error("The App Store subscription is not available yet.");
+        }
+        const customerInfo = await purchaseApplePackage(user.id, applePackage);
+        if (!hasApplePlus(customerInfo)) {
+          throw new Error("The purchase completed without an active Plus entitlement.");
+        }
+        setVerifying(true);
+        const check = await api.verifyAppleSubscription(token);
+        if (!check.active) {
+          throw new Error("Apple is still confirming the subscription. Try Restore Purchases.");
+        }
+        await refresh();
+        setStatus({
+          kind: "success",
+          message: "Your Foxory Plus subscription is active.",
+        });
+        return;
+      }
+
       const successUrl =
         Platform.OS === "web"
           ? `${window.location.origin}/(app)/upgrade?billing=success`
@@ -104,14 +151,50 @@ export default function UpgradeScreen() {
         });
       }
     } catch (e: any) {
-      setStatus({ kind: "error", message: e?.message || "Upgrade failed." });
+      setStatus(
+        wasApplePurchaseCancelled(e)
+          ? { kind: "canceled", message: "Purchase canceled." }
+          : { kind: "error", message: e?.message || "Upgrade failed." },
+      );
     } finally {
       setCheckingOut(false);
       setVerifying(false);
     }
-  }, [token, refresh]);
+  }, [applePackage, isApple, refresh, token, user]);
+
+  const restorePurchases = useCallback(async () => {
+    if (!token || !user || !isApple) return;
+    setVerifying(true);
+    setStatus({ kind: "pending", message: "Restoring App Store purchases…" });
+    try {
+      const customerInfo = await restoreApplePurchases(user.id);
+      if (!hasApplePlus(customerInfo)) {
+        setStatus({
+          kind: "canceled",
+          message: "No active Foxory Plus subscription was found for this Apple ID.",
+        });
+        return;
+      }
+      const check = await api.verifyAppleSubscription(token);
+      if (!check.active) {
+        throw new Error("Apple is still confirming the subscription. Please try again shortly.");
+      }
+      await refresh();
+      setStatus({ kind: "success", message: "Purchases restored. Foxory Plus is active." });
+    } catch (e: any) {
+      setStatus({ kind: "error", message: e?.message || "Restore failed." });
+    } finally {
+      setVerifying(false);
+    }
+  }, [isApple, refresh, token, user]);
 
   const plan = config?.plans?.[0];
+  const displayedPrice = isApple
+    ? `${applePackage?.product.priceString || "$2.99"}/month`
+    : plan?.price_display || "AED 10.99/month";
+  const purchaseAvailable = isApple
+    ? isApplePurchaseConfigured() && Boolean(applePackage)
+    : Boolean(config?.configured);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -152,12 +235,12 @@ export default function UpgradeScreen() {
 
           <View style={styles.priceRow}>
             <Text style={styles.priceMain}>
-              {plan?.price_display || "AED 10.99/month"}
+              {displayedPrice}
             </Text>
             <View style={styles.priceBadge}>
               <Ionicons name="sparkles" size={11} color={colors.neonHover} />
               <Text style={styles.priceBadgeText}>
-                {plan?.badge_display || "Plus $2.99/month"}
+                {isApple ? "Monthly subscription" : plan?.badge_display || "Plus $2.99/month"}
               </Text>
             </View>
           </View>
@@ -192,11 +275,14 @@ export default function UpgradeScreen() {
                 color={colors.textMuted}
               />
               <Text style={styles.metaText}>
-                Powered by <Text style={styles.metaBold}>Ziina</Text> · secure
-                hosted checkout
+                {isApple ? (
+                  <>Secure subscription through the <Text style={styles.metaBold}>Apple App Store</Text></>
+                ) : (
+                  <>Powered by <Text style={styles.metaBold}>Ziina</Text> · secure hosted checkout</>
+                )}
               </Text>
             </View>
-            {config?.test_mode && (
+            {!isApple && config?.test_mode && (
               <View style={styles.metaRow}>
                 <Ionicons
                   name="flask-outline"
@@ -254,11 +340,11 @@ export default function UpgradeScreen() {
           <Pressable
             testID="upgrade-cta"
             onPress={doUpgrade}
-            disabled={checkingOut || !config?.configured}
+            disabled={checkingOut || !purchaseAvailable}
             style={({ pressed }) => [
               styles.cta,
               pressed && { opacity: 0.85 },
-              (checkingOut || !config?.configured) && { opacity: 0.7 },
+              (checkingOut || !purchaseAvailable) && { opacity: 0.7 },
             ]}
           >
             {checkingOut ? (
@@ -267,7 +353,7 @@ export default function UpgradeScreen() {
               <>
                 <Ionicons name="sparkles" size={16} color="#0B0619" />
                 <Text style={styles.ctaText}>
-                  Upgrade to Plus — {plan?.price_display || "AED 10.99/month"}
+                  Subscribe to Plus — {displayedPrice}
                 </Text>
               </>
             )}
@@ -287,17 +373,41 @@ export default function UpgradeScreen() {
           </View>
         )}
 
-        {!config?.configured && !loading && (
+        {!purchaseAvailable && !loading && (
           <Text style={styles.warnText}>
-            Ziina is not configured on the backend. Set{" "}
-            <Text style={{ fontFamily: "monospace" }}>ZIINA_API_KEY</Text> to
-            enable checkout.
+            {isApple
+              ? "Apple subscriptions will be available after App Store setup is complete."
+              : "Checkout is temporarily unavailable."}
           </Text>
         )}
 
+        {isApple && !isPlus && (
+          <Pressable
+            testID="restore-purchases"
+            onPress={restorePurchases}
+            disabled={verifying || !isApplePurchaseConfigured()}
+            style={({ pressed }) => [styles.restoreBtn, pressed && { opacity: 0.75 }]}
+          >
+            <Text style={styles.restoreText}>Restore Purchases</Text>
+          </Pressable>
+        )}
+
+        {isApple && (
+          <View style={styles.legalLinks}>
+            <Pressable onPress={() => router.push("/(app)/terms")}>
+              <Text style={styles.legalLinkText}>Terms of Service</Text>
+            </Pressable>
+            <Text style={styles.legalDot}>•</Text>
+            <Pressable onPress={() => router.push("/(app)/privacy")}>
+              <Text style={styles.legalLinkText}>Privacy Policy</Text>
+            </Pressable>
+          </View>
+        )}
+
         <Text style={styles.legal}>
-          Access lasts 30 days per payment. Ziina Payment Services · Test mode is{" "}
-          {config?.test_mode ? "ON" : "OFF"}.
+          {isApple
+            ? "Payment is charged to your Apple ID. Subscription renews monthly until canceled in App Store settings."
+            : `Access lasts 30 days per payment. Ziina Payment Services · Test mode is ${config?.test_mode ? "ON" : "OFF"}.`}
         </Text>
 
         <View style={{ marginTop: spacing.xl, alignItems: "center" }}>
@@ -527,6 +637,32 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     textAlign: "center",
     marginTop: 4,
+  },
+  restoreBtn: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: spacing.md,
+  },
+  restoreText: {
+    color: colors.textAccent,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  legalLinks: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  legalLinkText: {
+    color: colors.textAccent,
+    fontSize: 11.5,
+    textDecorationLine: "underline",
+  },
+  legalDot: {
+    color: colors.textMuted,
+    fontSize: 11,
   },
   legal: {
     color: colors.textMuted,

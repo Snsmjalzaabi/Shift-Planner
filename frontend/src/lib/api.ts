@@ -241,4 +241,14 @@ export const api = {
       body: JSON.stringify({ payment_intent_id }),
       token,
     }),
+
+  verifyAppleSubscription: (token: string) =>
+    request<{
+      active: boolean;
+      plus_expires_at: string | null;
+      user: AuthUser;
+    }>("/billing/apple/verify", {
+      method: "POST",
+      token,
+    }),
 };

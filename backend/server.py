@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 import bcrypt
 import httpx
@@ -59,6 +60,15 @@ ZIINA_TEST_MODE = os.environ.get("ZIINA_TEST_MODE", "true").strip().lower() == "
 ZIINA_PRICE_FILS = int(os.environ.get("ZIINA_PRICE_FILS", "1099"))  # 10.99 AED
 ZIINA_CURRENCY = os.environ.get("ZIINA_CURRENCY", "AED").strip().upper()
 ZIINA_WEBHOOK_SECRET = os.environ.get("ZIINA_WEBHOOK_SECRET", "").strip()
+REVENUECAT_SECRET_API_KEY = os.environ.get(
+    "REVENUECAT_SECRET_API_KEY", ""
+).strip()
+REVENUECAT_ENTITLEMENT_ID = os.environ.get(
+    "REVENUECAT_ENTITLEMENT_ID", "plus"
+).strip()
+REVENUECAT_API_BASE = os.environ.get(
+    "REVENUECAT_API_BASE", "https://api.revenuecat.com/v1"
+).rstrip("/")
 PLUS_PLAN_ID = "plus_monthly"
 PLUS_DURATION_DAYS = 30
 
@@ -195,7 +205,7 @@ async def _expire_paid_access_if_needed(user: dict[str, Any]) -> dict[str, Any]:
     expires_at = _as_utc(user.get("plus_expires_at"))
     if (
         user.get("plan") == "plus"
-        and user.get("plan_source") == "paid"
+        and user.get("plan_source") in {"paid", "apple"}
         and expires_at is not None
         and expires_at <= datetime.now(timezone.utc)
         and not user.get("is_superuser")
@@ -638,6 +648,103 @@ async def billing_config():
                 ],
             }
         ],
+    }
+
+
+@api_router.post("/billing/apple/verify")
+async def verify_apple_subscription(
+    current_user: dict = Depends(get_current_user),
+):
+    """Verify the signed-in user's App Store entitlement via RevenueCat.
+
+    The client uses the public RevenueCat SDK key. This endpoint keeps the
+    secret key on the server and never trusts a client-provided entitlement.
+    """
+    if not REVENUECAT_SECRET_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Apple subscriptions are not configured yet.",
+        )
+
+    customer_id = quote(str(current_user["id"]), safe="")
+    headers = {
+        "Authorization": f"Bearer {REVENUECAT_SECRET_API_KEY}",
+        "Accept": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            resp = await http.get(
+                f"{REVENUECAT_API_BASE}/subscribers/{customer_id}",
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        logger.exception("RevenueCat subscription verification failed")
+        raise HTTPException(
+            status_code=502,
+            detail="Apple subscription verification is temporarily unavailable.",
+        ) from exc
+
+    if resp.status_code >= 400:
+        logger.error("RevenueCat verification failed with status %s", resp.status_code)
+        raise HTTPException(
+            status_code=502,
+            detail="Apple subscription verification is temporarily unavailable.",
+        )
+
+    subscriber = (resp.json() or {}).get("subscriber") or {}
+    entitlement = (subscriber.get("entitlements") or {}).get(
+        REVENUECAT_ENTITLEMENT_ID
+    )
+    expires_at = _as_utc(entitlement.get("expires_date")) if entitlement else None
+    now = datetime.now(timezone.utc)
+    active = bool(entitlement) and (expires_at is None or expires_at > now)
+
+    if active:
+        await db.users.update_one(
+            {"id": current_user["id"]},
+            {
+                "$set": {
+                    "plan": "plus",
+                    "plan_source": "apple",
+                    "plus_expires_at": expires_at,
+                    "plus_activated_at": current_user.get("plus_activated_at") or now,
+                    "updated_at": now,
+                }
+            },
+        )
+    elif current_user.get("plan_source") == "apple":
+        if _has_included_access(current_user.get("email", "")):
+            await db.users.update_one(
+                {"id": current_user["id"]},
+                {
+                    "$set": {
+                        "plan": "plus",
+                        "plan_source": "included",
+                        "plus_expires_at": None,
+                        "updated_at": now,
+                    }
+                },
+            )
+        else:
+            await db.users.update_one(
+                {"id": current_user["id"]},
+                {
+                    "$set": {
+                        "plan": "free",
+                        "plan_source": "free",
+                        "plus_expires_at": None,
+                        "updated_at": now,
+                    }
+                },
+            )
+
+    fresh_user = await db.users.find_one(
+        {"id": current_user["id"]}, {"_id": 0, "hashed_password": 0}
+    )
+    return {
+        "active": active,
+        "plus_expires_at": expires_at.isoformat() if expires_at else None,
+        "user": _public_user(fresh_user),
     }
 
 

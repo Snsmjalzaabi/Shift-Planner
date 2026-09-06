@@ -11,6 +11,11 @@ import {
 
 import { api, AuthUser } from "@/src/lib/api";
 import {
+  configureApplePurchases,
+  disconnectApplePurchases,
+  isApplePurchaseConfigured,
+} from "@/src/lib/applePurchases";
+import {
   clearCachedUser,
   clearToken,
   loadCachedUser,
@@ -72,6 +77,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
 
+  useEffect(() => {
+    if (!token || !user?.id || !isApplePurchaseConfigured()) return;
+    let active = true;
+    (async () => {
+      try {
+        await configureApplePurchases(user.id);
+        const verified = await api.verifyAppleSubscription(token);
+        if (active) {
+          setUser(verified.user);
+          await saveCachedUser(JSON.stringify(verified.user));
+        }
+      } catch {
+        // Keep cached access during temporary App Store/backend outages.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [token, user?.id]);
+
   const login = useCallback(async (email: string, password: string) => {
     const resp = await api.login(email, password);
     setToken(resp.access_token);
@@ -94,6 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
+    await disconnectApplePurchases().catch(() => {});
     await clearToken();
     await clearCachedUser();
     setToken(null);

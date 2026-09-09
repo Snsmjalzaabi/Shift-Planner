@@ -3,6 +3,11 @@ export const BACKEND_URL = (
 ).replace(/\/$/, "");
 export const API_BASE = `${BACKEND_URL}/api`;
 
+// Render's free tier can need a short moment to wake after inactivity. A
+// bounded request prevents that wait from turning into an endless spinner if
+// the device loses its connection while the service is starting.
+const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
+
 export type AuthUser = {
   id: string;
   email: string;
@@ -38,39 +43,73 @@ export type ApiError = Error & { status?: number; code?: string };
 
 async function request<T>(
   path: string,
-  init: RequestInit & { token?: string | null } = {},
+  init: RequestInit & { token?: string | null; timeoutMs?: number } = {},
 ): Promise<T> {
-  const { token, headers, ...rest } = init;
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...rest,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(headers || {}),
-    },
-  });
-  if (!res.ok) {
-    let detail = `Request failed (${res.status})`;
-    let code: string | undefined;
-    try {
-      const body = await res.json();
-      if (body?.detail) {
-        if (typeof body.detail === "string") {
-          detail = body.detail;
-        } else if (typeof body.detail === "object") {
-          detail = body.detail.message || JSON.stringify(body.detail);
-          code = body.detail.code;
-        }
-      }
-    } catch {
-      // ignore
+  const {
+    token,
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    headers,
+    signal: callerSignal,
+    ...rest
+  } = init;
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      controller.abort();
+    } else {
+      callerSignal.addEventListener("abort", abortFromCaller, { once: true });
     }
-    const err: ApiError = new Error(detail);
-    err.status = res.status;
-    err.code = code;
-    throw err;
   }
-  return (await res.json()) as T;
+
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...rest,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(headers || {}),
+      },
+    });
+    if (!res.ok) {
+      let detail = `Request failed (${res.status})`;
+      let code: string | undefined;
+      try {
+        const body = await res.json();
+        if (body?.detail) {
+          if (typeof body.detail === "string") {
+            detail = body.detail;
+          } else if (typeof body.detail === "object") {
+            detail = body.detail.message || JSON.stringify(body.detail);
+            code = body.detail.code;
+          }
+        }
+      } catch {
+        // ignore
+      }
+      const err: ApiError = new Error(detail);
+      err.status = res.status;
+      err.code = code;
+      throw err;
+    }
+    return (await res.json()) as T;
+  } catch (error) {
+    if (controller.signal.aborted && !callerSignal?.aborted) {
+      const err: ApiError = new Error(
+        "The service is taking longer than expected. Please try again.",
+      );
+      err.code = "network_timeout";
+      throw err;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  }
 }
 
 export function isPlusRequired(e: unknown): boolean {

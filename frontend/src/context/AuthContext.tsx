@@ -47,34 +47,55 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   useEffect(() => {
+    let active = true;
+
     (async () => {
       try {
         const savedToken = await loadToken();
         if (savedToken) {
+          if (!active) return;
           setToken(savedToken);
+
+          let cachedUser: AuthUser | null = null;
           const cached = await loadCachedUser();
           if (cached) {
             try {
-              setUser(JSON.parse(cached) as AuthUser);
+              cachedUser = JSON.parse(cached) as AuthUser;
+              if (!active) return;
+              setUser(cachedUser);
+              // Let the app open with the saved session while Render wakes.
+              // The profile refresh below still corrects stale account data.
+              setIsLoading(false);
             } catch {
               // ignore parse
             }
           }
           try {
             const fresh = await api.me(savedToken);
+            if (!active) return;
             setUser(fresh);
             await saveCachedUser(JSON.stringify(fresh));
           } catch {
-            await clearToken();
-            await clearCachedUser();
-            setToken(null);
-            setUser(null);
+            // A network timeout is not proof that the session is invalid. Keep
+            // a valid cached profile so a free-tier cold start cannot trap the
+            // user on the startup spinner or sign them out.
+            if (!cachedUser) {
+              await clearToken();
+              await clearCachedUser();
+              if (!active) return;
+              setToken(null);
+              setUser(null);
+            }
           }
         }
       } finally {
-        setIsLoading(false);
+        if (active) setIsLoading(false);
       }
     })();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {

@@ -54,6 +54,8 @@ SUPERUSER_PASSWORD = os.environ.get("SUPERUSER_PASSWORD", "").strip()
 
 REVIEWER_EMAIL = os.environ.get("REVIEWER_EMAIL", "").strip()
 REVIEWER_PASSWORD = os.environ.get("REVIEWER_PASSWORD", "").strip()
+TESTER_EMAIL = os.environ.get("TESTER_EMAIL", "").strip()
+TESTER_PASSWORD = os.environ.get("TESTER_PASSWORD", "").strip()
 
 ZIINA_API_KEY = os.environ.get("ZIINA_API_KEY", "").strip()
 ZIINA_API_BASE = os.environ.get("ZIINA_API_BASE", "https://api-v2.ziina.com/api").rstrip("/")
@@ -366,10 +368,53 @@ async def seed_reviewer() -> None:
         logger.info("Reviewer account %s already present; plan re-affirmed", REVIEWER_EMAIL)
 
 
+async def seed_tester() -> None:
+    """Seed one shared Plus account for closed-test participants.
+
+    Credentials are supplied only through Render environment variables and are
+    never committed. The password is preserved after the initial seed.
+    """
+    if not TESTER_EMAIL or not TESTER_PASSWORD:
+        return
+    existing = await db.users.find_one({"email": TESTER_EMAIL})
+    now = datetime.now(timezone.utc)
+    if existing is None:
+        await db.users.insert_one(
+            {
+                "id": str(uuid.uuid4()),
+                "email": TESTER_EMAIL,
+                "display_name": "Foxory Demo Tester",
+                "hashed_password": hash_password(TESTER_PASSWORD),
+                "is_superuser": False,
+                "plan": "plus",
+                "plan_source": "tester",
+                "plus_activated_at": now,
+                "plus_expires_at": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+        logger.info("Seeded tester account %s", TESTER_EMAIL)
+    else:
+        await db.users.update_one(
+            {"_id": existing["_id"]},
+            {
+                "$set": {
+                    "plan": "plus",
+                    "plan_source": "tester",
+                    "plus_expires_at": None,
+                    "updated_at": now,
+                }
+            },
+        )
+        logger.info("Tester account %s already present; plan re-affirmed", TESTER_EMAIL)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await seed_superuser()
     await seed_reviewer()
+    await seed_tester()
     yield
     client.close()
 

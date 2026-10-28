@@ -23,7 +23,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.foxory.shiftcalendar",
-      "versionCode": 10
+      "versionCode": 11
     },
     "web": {
       "bundler": "metro",
@@ -61,6 +61,12 @@
         "projectId": "c83e1f59-1a5c-4386-b391-d70022b16e0d"
       }
     },
-    "owner": "snsmjalzaabi"
+    "owner": "snsmjalzaabi",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/c83e1f59-1a5c-4386-b391-d70022b16e0d"
+    }
   }
 }

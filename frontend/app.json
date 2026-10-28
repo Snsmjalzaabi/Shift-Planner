@@ -23,7 +23,7 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.foxory.shiftcalendar",
-      "versionCode": 11
+      "versionCode": 12
     },
     "web": {
       "bundler": "metro",

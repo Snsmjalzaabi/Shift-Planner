@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
+import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import { useMemo, useState } from "react";
@@ -104,15 +105,42 @@ export default function ImportScheduleScreen() {
       if (result.canceled) return;
 
       const asset = result.assets[0];
-      const { extractTextFromImage } = await import("expo-text-extractor");
-      const lines = await extractTextFromImage(asset.uri);
+      const { isSupported, extractTextFromImage } = await import(
+        "expo-text-extractor"
+      );
+      if (!isSupported) {
+        setError(
+          "Text recognition is not available on this device. Try importing an Excel file instead.",
+        );
+        return;
+      }
+      // Normalize image orientation before OCR. expo-image-picker preserves
+      // EXIF rotation metadata, but expo-text-extractor's native modules do not
+      // apply it (iOS VNImageRequestHandler defaults to .up, Android ML Kit
+      // may skip rotation). Saving through the manipulator bakes the correct
+      // pixel orientation into the output file.
+      const normalized = await manipulateAsync(
+        asset.uri,
+        [{ resize: { width: 1080 } }],
+        { compress: 0.85, format: SaveFormat.JPEG },
+      );
+      const lines = await extractTextFromImage(normalized.uri);
+      if (!lines || lines.length === 0) {
+        setError(
+          "No text was found in the image. Ensure the photo is well-lit, the schedule is fully visible, and text is not rotated. Try the Excel import option for more reliable results.",
+        );
+        return;
+      }
       const elements: PositionedText[] = [];
       loadCandidates(
         parseRecognizedText(elements, lines.join("\n")),
         asset.fileName || "Schedule photo",
       );
     } catch (caught: any) {
-      setError(caught?.message || "The schedule image could not be read.");
+      setError(
+        caught?.message ||
+          "The schedule image could not be processed. Try a clearer photo or use the Excel import option.",
+      );
     } finally {
       setBusy(null);
     }

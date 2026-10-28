@@ -96,6 +96,9 @@ def _has_included_access(email: str) -> bool:
     e = (email or "").strip().lower()
     if "@" not in e:
         return False
+    # The configured SUPERUSER_EMAIL always receives Plus + superuser on login.
+    if SUPERUSER_EMAIL and e == SUPERUSER_EMAIL.strip().lower():
+        return True
     domain = e.rsplit("@", 1)[1]
     return any(
         domain == d or domain.endswith("." + d)
@@ -514,8 +517,7 @@ async def terms_page():
         secure and use the app only for lawful purposes.</p>
         <h2>Schedule accuracy</h2>
         <p>Imported and manually entered schedules must be reviewed by you. Foxory is
-        not a clinical staffing system, employer record, or substitute for your official
-        workplace schedule.</p>
+        not a clinical staffing system, employer record, or substitute for your official workplace schedule.</p>
         <h2>Foxory Plus</h2>
         <p>On iPhone and iPad, Plus is an auto-renewing monthly subscription billed to
         your Apple ID. The App Store displays the final local price before purchase. It
@@ -597,28 +599,36 @@ def _public_user(user: dict[str, Any]) -> dict[str, Any]:
 async def _apply_included_access_if_needed(
     user_doc: dict[str, Any],
 ) -> dict[str, Any]:
-    """Idempotently grant Plus to configured organization accounts."""
+    """Idempotently grant Plus + superuser to configured accounts.
+
+    Organization-domain accounts get Plus (plan_source "included").
+    The SUPERUSER_EMAIL account gets Plus + is_superuser=True.
+    Paid/Apple accounts are left as-is.
+    """
     if not _has_included_access(user_doc.get("email", "")):
         return user_doc
-    if user_doc.get("plan") == "plus" and user_doc.get("plan_source") != "paid":
+    if user_doc.get("is_superuser") and user_doc.get("plan") == "plus":
         return user_doc
-    if user_doc.get("plan_source") == "paid":
-        return user_doc  # they already paid — keep the paid tag
     now = datetime.now(timezone.utc)
+    email = user_doc.get("email", "").strip().lower()
+    is_owner = bool(SUPERUSER_EMAIL) and email == SUPERUSER_EMAIL.strip().lower()
+    update_doc: dict[str, Any] = {
+        "plan": "plus",
+        "plan_source": "included",
+        "plus_activated_at": user_doc.get("plus_activated_at") or now,
+        "updated_at": now,
+    }
+    if is_owner:
+        update_doc["is_superuser"] = True
     await db.users.update_one(
         {"id": user_doc["id"]},
-        {
-            "$set": {
-                "plan": "plus",
-                "plan_source": "included",
-                "plus_activated_at": user_doc.get("plus_activated_at") or now,
-                "updated_at": now,
-            }
-        },
+        {"$set": update_doc},
     )
     user_doc["plan"] = "plus"
     user_doc["plan_source"] = "included"
-    logger.info("Included organization access applied to user %s", user_doc["id"])
+    if is_owner:
+        user_doc["is_superuser"] = True
+    logger.info("Included access applied to user %s", user_doc["id"])
     return user_doc
 
 
@@ -644,7 +654,8 @@ async def register(body: RegisterRequest):
         "email": body.email,
         "display_name": body.display_name or body.email.split("@")[0],
         "hashed_password": hash_password(body.password),
-        "is_superuser": False,
+        "is_superuser": bool(SUPERUSER_EMAIL)
+        and body.email.strip().lower() == SUPERUSER_EMAIL.strip().lower(),
         "plan": plan,
         "plan_source": plan_source,
         "plus_activated_at": now if included_access else None,

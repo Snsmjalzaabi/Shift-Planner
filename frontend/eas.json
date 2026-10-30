@@ -14,7 +14,18 @@
       },
       "ios": {
         "resourceClass": "m-medium"
-      }
+      },
+      "channel": "production"
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "http://localhost:8090"
+      },
+      "ios": {
+        "resourceClass": "m-medium"
+      },
+      "channel": "preview"
     }
   },
   "submit": {

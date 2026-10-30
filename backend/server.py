@@ -1309,6 +1309,35 @@ async def list_shifts(
     return [_serialize_shift(it) for it in items]
 
 
+@api_router.get("/shifts/current")
+async def current_shifts(current_user: dict = Depends(get_current_user)):
+    """Plot the user's current roster (today + next 30 days) onto the calendar
+    without a file import.
+
+    This powers the Import "Current roster" tap and the dashboard
+    "Plot current roster" action: instead of picking up a schedule image or
+    Excel file, the roster is fetched from the server and plotted on the
+    calendar in one tap.
+    """
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    end = (now + timedelta(days=30)).strftime("%Y-%m-%d")
+    query: dict[str, Any] = {
+        "user_id": current_user["id"],
+        "date": {"$gte": today, "$lte": end},
+    }
+    cursor = db.shifts.find(query, {"_id": 0}).sort("date", 1)
+    items = await cursor.to_list(length=500)
+    serialized = [_serialize_shift(it) for it in items]
+    today_count = sum(1 for s in serialized if s["date"] == today)
+    return {
+        "shifts": serialized,
+        "today_count": today_count,
+        "upcoming_count": len(serialized) - today_count,
+        "window": {"start": today, "end": end},
+    }
+
+
 @api_router.patch("/shifts/{shift_id}")
 async def update_shift(
     shift_id: str, body: ShiftUpdate, current_user: dict = Depends(get_current_user)

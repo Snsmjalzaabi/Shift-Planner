@@ -3,7 +3,7 @@ import base64
 import io
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import requests
@@ -220,3 +220,42 @@ def test_export_invalid_month(super_token):
 def test_unauthorized_shifts():
     r = session.get(f"{API}/shifts", timeout=15)
     assert r.status_code in (401, 403)
+
+
+def test_current_shifts(super_token):
+    """GET /api/shifts/current auto-plots the user's current roster (today + next 30 days)."""
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    upcoming = (now + timedelta(days=5)).strftime("%Y-%m-%d")
+    out_of_range = (now + timedelta(days=60)).strftime("%Y-%m-%d")
+    hdr = _auth(super_token)
+    created = []
+    try:
+        for d, t in ((today, "day"), (upcoming, "night"), (out_of_range, "off")):
+            r = session.post(
+                f"{API}/shifts",
+                json={"date": d, "type": t, "start_time": "07:00", "end_time": "19:00", "is_draft": True},
+                headers=hdr,
+                timeout=15,
+            )
+            assert r.status_code == 200, r.text
+            created.append(r.json()["id"])
+
+        r = session.get(f"{API}/shifts/current", headers=hdr, timeout=15)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "shifts" in data and "today_count" in data and "window" in data
+        # The in-range shifts created by this test must appear; a pre-existing
+        # roster in the shared DB only raises these counts, never lowers them.
+        assert data["today_count"] >= 1
+        returned_ids = {s["id"] for s in data["shifts"]}
+        assert set(created[:2]).issubset(returned_ids)
+        # A shift 60 days out must NOT be in the current roster window.
+        assert created[2] not in returned_ids
+        # Shifts are sorted ascending by date.
+        dates = [s["date"] for s in data["shifts"]]
+        assert dates == sorted(dates)
+    finally:
+        for sid in created:
+            session.delete(f"{API}/shifts/{sid}", headers=hdr, timeout=15)
+

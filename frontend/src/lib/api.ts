@@ -149,6 +149,14 @@ export const api = {
     return request<Shift[]>(`/shifts${q ? `?${q}` : ""}`, { token });
   },
 
+  currentShifts: (token: string) =>
+    request<{
+      shifts: Shift[];
+      today_count: number;
+      upcoming_count: number;
+      window: { start: string; end: string };
+    }>("/shifts/current", { token }),
+
   createShift: (
     token: string,
     body: {

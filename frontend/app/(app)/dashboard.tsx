@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -19,6 +20,7 @@ import { colors, radius, shiftTheme, spacing } from "@/src/theme/colors";
 import {
   buildMonthGrid,
   monthLabel,
+  shiftDateDisplay,
   todayIso,
   ym,
 } from "@/src/utils/dateUtils";
@@ -28,12 +30,18 @@ const WEEK_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export default function DashboardScreen() {
   const { token } = useAuth();
   const now = new Date();
+
   const [year, setYear] = useState(now.getFullYear());
   const [month0, setMonth0] = useState(now.getMonth());
   const [shifts, setShifts] = useState<Shift[]>([]);
+  const currentMonthKey = ym(now.getFullYear(), now.getMonth());
+  const currentShifts = shifts.filter((s) => s.date.startsWith(currentMonthKey));
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [plotting, setPlotting] = useState(false);
+  const [plotNote, setPlotNote] = useState<string | null>(null);
   const today = todayIso();
 
   const monthKey = ym(year, month0);
@@ -77,6 +85,32 @@ export default function DashboardScreen() {
     setRefreshing(false);
   };
 
+  // "Import tap": plot the user's current roster on the calendar without
+  // picking up a schedule image or Excel file — just one tap fetches the
+  // roster from the backend and plots it on the grid.
+  const plotCurrentRoster = async () => {
+    if (!token || plotting) return;
+    setPlotting(true);
+    setPlotNote(null);
+    try {
+      const res = await api.currentShifts(token);
+      // Move the grid to the current month so today's shifts are visible,
+      // then refetch that month's roster so the chips render.
+      const d = new Date();
+      setYear(d.getFullYear());
+      setMonth0(d.getMonth());
+      setPlotNote(
+        `${res.today_count} shift${res.today_count === 1 ? "" : "s"} today · ${res.shifts.length} shifts plotted`,
+      );
+      setTimeout(() => setPlotNote(null), 4000);
+    } catch (e: any) {
+      setPlotNote(e?.message || "Could not fetch current roster");
+      setTimeout(() => setPlotNote(null), 4000);
+    } finally {
+      setPlotting(false);
+    }
+  };
+
   const goPrev = () => {
     if (month0 === 0) {
       setMonth0(11);
@@ -100,6 +134,32 @@ export default function DashboardScreen() {
     setYear(d.getFullYear());
     setMonth0(d.getMonth());
   };
+
+  const [plotStatus, setPlotStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [plotError, setPlotError] = useState<string | null>(null);
+
+  const plotCurrentShifts = useCallback(async () => {
+    if (!token) return;
+    setPlotStatus("loading");
+    try {
+      const now = new Date();
+      const currentMonth = ym(now.getFullYear(), now.getMonth());
+      const fetched: Shift[] = await api.listShifts(token, currentMonth, true);
+      const map = new Map<string, Shift>();
+      for (const s of shifts) map.set(s.id, s);
+      for (const s of fetched) map.set(s.id, s);
+      const merged = Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+      setShifts(merged);
+      setPlotStatus("done");
+      Alert.alert("Current shifts plotted", `${fetched.length} shift${fetched.length === 1 ? "" : "s"} loaded for ${currentMonth}.`, [
+        { text: "OK", style: "default" },
+      ]);
+      setTimeout(() => setPlotStatus("idle"), 2000);
+    } catch (e: any) {
+      setPlotStatus("error");
+      Alert.alert("Plot failed", e?.message || "Could not fetch current shifts from the server.");
+    }
+  }, [token, shifts]);
 
   const draftCount = shifts.filter((s) => s.is_draft).length;
   const confirmedCount = shifts.length - draftCount;
@@ -136,6 +196,14 @@ export default function DashboardScreen() {
             </TouchableOpacity>
           </View>
           <TouchableOpacity
+            testID="plot-current-btn"
+            onPress={plotCurrentShifts}
+            style={styles.plotBtn}
+          >
+            <Ionicons name="calendar-outline" size={15} color={colors.neonHover} />
+            <Text style={styles.plotBtnText}>Plot current</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
             testID="next-month-btn"
             onPress={goNext}
             style={styles.navBtn}
@@ -147,6 +215,29 @@ export default function DashboardScreen() {
             />
           </TouchableOpacity>
         </View>
+
+        {/* Plot current roster — the "import tap": fetch the roster from the
+            backend and plot it on the calendar without a file pick. */}
+        <View style={styles.plotActionBar}>
+          <TouchableOpacity
+            testID="plot-current-roster"
+            style={styles.plotButton}
+            onPress={plotCurrentRoster}
+            disabled={plotting}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="cloud-download-outline" size={17} color="#0B0619" />
+            <Text style={styles.plotButtonText}>
+              {plotting ? "Plotting…" : "Plot current roster"}
+            </Text>
+          </TouchableOpacity>
+          {plotting && <ActivityIndicator color={colors.neon} />}
+        </View>
+        {plotNote && (
+          <View style={styles.plotNoteBox} testID="plot-note">
+            <Text style={styles.plotNoteText}>{plotNote}</Text>
+          </View>
+        )}
 
         {/* Stats */}
         <View style={styles.statsRow}>
@@ -245,6 +336,71 @@ export default function DashboardScreen() {
           </View>
         )}
 
+        {/* Current shifts */}
+        <View style={styles.currentSection}>
+          <View style={styles.currentHeader}>
+            <Text style={styles.currentTitle}>Current shifts</Text>
+            <TouchableOpacity
+              onPress={plotCurrentShifts}
+              disabled={plotStatus === "loading"}
+              style={styles.currentPlotBtn}
+            >
+              <Ionicons
+                name="calendar-outline"
+                size={14}
+                color={plotStatus === "loading" ? colors.textMuted : colors.neonHover}
+              />
+              <Text
+                style={[
+                  styles.currentPlotText,
+                  plotStatus === "loading" && styles.currentPlotTextLoading,
+                ]}
+              >
+                {plotStatus === "loading" ? "Plotting…" : "Plot"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+          {plotStatus === "loading" && (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator color={colors.neon} />
+            </View>
+          )}
+          {plotStatus === "error" && plotError && (
+            <View style={[styles.errorBox, { marginTop: spacing.sm }]}>
+              <Ionicons name="alert-circle-outline" size={20} color={colors.danger} />
+              <Text style={styles.errorText}>{plotError}</Text>
+            </View>
+          )}
+          {currentShifts.length === 0 ? (
+            <Text style={styles.currentEmpty}>No shifts plotted yet for this month.</Text>
+          ) : (
+            <View style={styles.currentList}>
+              {currentShifts.map((s) => {
+                const th = shiftTheme(s.type);
+                return (
+                  <View key={s.id} style={styles.currentRow}>
+                    <View
+                      style={[
+                        styles.currentDot,
+                        { backgroundColor: th.text, borderColor: th.border },
+                      ]}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.currentDate}>{shiftDateDisplay(s.date)}</Text>
+                      <Text style={[styles.currentLabel, { color: th.text }]}>{th.label}</Text>
+                      {s.start_time && s.end_time && (
+                        <Text style={styles.currentTime}>
+                          {s.start_time} → {s.end_time}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </View>
+
         {/* Legend */}
         <View style={styles.legend}>
           {(["day", "night", "on_call", "off"] as const).map((t) => {
@@ -337,6 +493,40 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
     fontWeight: "600",
+  },
+  plotActionBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  plotButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.neonHover,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    height: 40,
+    flexShrink: 1,
+  },
+  plotButtonText: {
+    color: "#0B0619",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  plotNoteBox: {
+    backgroundColor: colors.neonSoft,
+    borderColor: colors.borderActive,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    marginBottom: spacing.xs,
+  },
+  plotNoteText: {
+    color: colors.textSecondary,
+    fontSize: 12,
   },
   statsRow: {
     flexDirection: "row",
@@ -463,5 +653,118 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 11,
     fontWeight: "600",
+  },
+  plotBtn: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.md,
+    backgroundColor: colors.neonSoft,
+    borderWidth: 1,
+    borderColor: colors.borderActive,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  plotBtnText: {
+    color: colors.neonHover,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  currentSection: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  currentHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+  },
+  currentTitle: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  currentPlotBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.neonSoft,
+    borderWidth: 1,
+    borderColor: colors.borderActive,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.pill,
+  },
+  currentPlotText: {
+    color: colors.neonHover,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  currentPlotTextLoading: {
+    color: colors.textMuted,
+  },
+  currentList: {
+    gap: spacing.xs,
+  },
+  currentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+  },
+  currentDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  currentDate: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  currentLabel: {
+    color: colors.textSecondary,
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  currentTime: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: "600",
+    marginTop: 1,
+  },
+  currentEmpty: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontStyle: "italic",
+  },
+  loadingBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    padding: spacing.md,
+  },
+  errorBox: {
+    flexDirection: "row",
+    backgroundColor: "rgba(248, 113, 113, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(248, 113, 113, 0.4)",
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  errorText: {
+    flex: 1,
+    color: colors.danger,
+    fontSize: 12,
+    lineHeight: 18,
   },
 });

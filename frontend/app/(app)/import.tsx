@@ -48,6 +48,12 @@ export default function ImportScheduleScreen() {
   const [busy, setBusy] = useState<"image" | "xlsx" | "saving" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedCount, setSavedCount] = useState(0);
+  const [currentRoster, setCurrentRoster] = useState<{
+    today_count: number;
+    total: number;
+    loaded: boolean;
+  } | null>(null);
+  const [currentLoading, setCurrentLoading] = useState(false);
 
   const selected = useMemo(
     () => candidates.filter((candidate) => candidate.selected),
@@ -167,6 +173,33 @@ export default function ImportScheduleScreen() {
     } finally {
       setBusy(null);
     }
+  };
+
+  // "Current roster" import path: instead of picking up a photo or Excel
+  // file, fetch the roster that is already on the backend and plot it on the
+  // calendar. Used when the schedule is managed elsewhere and just needs to
+  // be reflected on the calendar.
+  const loadCurrentRoster = async () => {
+    if (!token) return;
+    setCurrentLoading(true);
+    setError(null);
+    try {
+      const res = await api.currentShifts(token);
+      setCurrentRoster({
+        today_count: res.today_count,
+        total: res.shifts.length,
+        loaded: true,
+      });
+    } catch (caught: any) {
+      setCurrentRoster(null);
+      setError(caught?.message || "Could not fetch the current roster.");
+    } finally {
+      setCurrentLoading(false);
+    }
+  };
+
+  const viewCalendar = () => {
+    router.replace("/(app)/dashboard");
   };
 
   const updateCandidate = (id: string, patch: Partial<ImportCandidate>) => {
@@ -303,6 +336,61 @@ export default function ImportScheduleScreen() {
                 <Ionicons name="document-attach-outline" size={18} color="#140C27" />
                 <Text style={styles.primaryActionText}>Choose Excel file</Text>
               </TouchableOpacity>
+            </View>
+
+            <View style={styles.sourceCard}>
+              <View style={styles.sourceIcon}>
+                <Ionicons name="sync-outline" size={25} color={colors.neon} />
+              </View>
+              <View style={styles.sourceCopy}>
+                <Text style={styles.sourceTitle}>Current roster</Text>
+                <Text style={styles.sourceText}>
+                  Plot the roster already on your account onto the calendar
+                  directly from the server — no photo or file needed.
+                </Text>
+              </View>
+              {currentRoster && currentRoster.loaded && (
+                <Text style={styles.currentRosterNote} testID="current-roster-note">
+                  {currentRoster.today_count} shift
+                  {currentRoster.today_count === 1 ? "" : "s"} today ·{" "}
+                  {currentRoster.total} total
+                </Text>
+              )}
+              {currentLoading ? (
+                <ActivityIndicator
+                  color={colors.neon}
+                  style={{ marginTop: spacing.xs }}
+                />
+              ) : (
+                <TouchableOpacity
+                  style={[styles.primaryAction, { marginTop: spacing.xs }]}
+                  onPress={loadCurrentRoster}
+                  disabled={!!busy}
+                  testID="import-current-roster"
+                >
+                  <Ionicons
+                    name="cloud-download-outline"
+                    size={18}
+                    color="#140C27"
+                  />
+                  <Text style={styles.primaryActionText}>
+                    Fetch &amp; plot current roster
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {currentRoster && currentRoster.loaded && (
+                <TouchableOpacity
+                  style={[styles.secondaryAction, { marginTop: spacing.xs }]}
+                  onPress={viewCalendar}
+                >
+                  <Ionicons
+                    name="calendar-outline"
+                    size={17}
+                    color={colors.textPrimary}
+                  />
+                  <Text style={styles.secondaryActionText}>View on Calendar</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.codeGuide}>
@@ -537,6 +625,12 @@ const styles = StyleSheet.create({
   sourceCopy: { gap: spacing.xs },
   sourceTitle: { color: colors.textPrimary, fontSize: 16, fontWeight: "800" },
   sourceText: { color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
+  currentRosterNote: {
+    color: colors.textAccent,
+    fontSize: 11.5,
+    fontWeight: "700",
+    marginTop: spacing.xs,
+  },
   actionRow: { flexDirection: "row", gap: spacing.sm },
   secondaryAction: {
     flex: 1,

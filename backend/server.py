@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, EmailStr, Field
@@ -278,6 +279,14 @@ class ShiftCreate(BaseModel):
     location: Optional[str] = None
     note: Optional[str] = None
     is_draft: bool = True
+    # Roster import (all optional; older clients simply omit them).
+    # `code` is the roster code exactly as written (D, N, X, XL, AL, ...).
+    code: Optional[str] = Field(default=None, max_length=12)
+    # Identity of an imported assignment (employee + date). Creating a shift
+    # with an import_key that already exists returns the existing shift
+    # instead of a duplicate, which makes repeated imports idempotent.
+    import_key: Optional[str] = Field(default=None, max_length=200)
+    source: Optional[str] = Field(default=None, max_length=40)
 
 
 class ShiftUpdate(BaseModel):
@@ -287,6 +296,8 @@ class ShiftUpdate(BaseModel):
     location: Optional[str] = None
     note: Optional[str] = None
     is_draft: Optional[bool] = None
+    code: Optional[str] = Field(default=None, max_length=12)
+    import_key: Optional[str] = Field(default=None, max_length=200)
 
 
 class ExportRequest(BaseModel):
@@ -413,8 +424,27 @@ async def seed_tester() -> None:
         logger.info("Tester account %s already present; plan re-affirmed", TESTER_EMAIL)
 
 
+async def ensure_shift_indexes() -> None:
+    """Unique (user_id, import_key) for imported shifts only.
+
+    Partial index: existing shifts (no import_key) are untouched, so this is
+    safe to create on production data. A failure is logged, not fatal; the
+    create endpoint still checks for an existing import_key first.
+    """
+    try:
+        await db.shifts.create_index(
+            [("user_id", 1), ("import_key", 1)],
+            name="uniq_user_import_key",
+            unique=True,
+            partialFilterExpression={"import_key": {"$type": "string"}},
+        )
+    except Exception as exc:  # pragma: no cover - depends on deployment DB
+        logger.warning("Could not create shift import_key index: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await ensure_shift_indexes()
     await seed_superuser()
     await seed_reviewer()
     await seed_tester()
@@ -564,6 +594,8 @@ async def root():
         "app": "Foxory Shift Calendar",
         "created_by": "Foxory.net",
         "status": "ok",
+        # Lets clients check the server stores roster codes before importing.
+        "features": ["shift_code", "import_key"],
     }
 
 
@@ -1258,6 +1290,26 @@ def _validate_date(d: str) -> None:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
 
 
+def _clean_code(code: Optional[str]) -> Optional[str]:
+    """Store the roster code as written: trimmed, never renamed or expanded."""
+    if code is None:
+        return None
+    cleaned = code.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > 12 or not all(ch.isalnum() for ch in cleaned):
+        raise HTTPException(status_code=400, detail="code must be 1-12 letters or digits")
+    return cleaned
+
+
+def shift_label(shift: dict[str, Any]) -> str:
+    """Display label: the roster code when present, else the type label."""
+    code = shift.get("code")
+    if code:
+        return str(code)
+    return SHIFT_TYPE_LABELS.get(shift.get("type", ""), shift.get("type", ""))
+
+
 def _serialize_shift(doc: dict[str, Any]) -> dict[str, Any]:
     out = {k: v for k, v in doc.items() if k != "_id"}
     for k in ("created_at", "updated_at"):
@@ -1271,6 +1323,14 @@ async def create_shift(body: ShiftCreate, current_user: dict = Depends(get_curre
     _validate_shift_type(body.type)
     _validate_date(body.date)
     _require_current_month_or_plus(current_user, body.date)
+    code = _clean_code(body.code)
+    import_key = (body.import_key or "").strip() or None
+    if import_key:
+        existing = await db.shifts.find_one(
+            {"user_id": current_user["id"], "import_key": import_key}, {"_id": 0}
+        )
+        if existing:
+            return {**_serialize_shift(existing), "duplicate": True}
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid.uuid4()),
@@ -1285,7 +1345,23 @@ async def create_shift(body: ShiftCreate, current_user: dict = Depends(get_curre
         "created_at": now,
         "updated_at": now,
     }
-    await db.shifts.insert_one(dict(doc))
+    # Only written when supplied, so ordinary shifts keep their old shape.
+    if code:
+        doc["code"] = code
+    if import_key:
+        doc["import_key"] = import_key
+    if body.source:
+        doc["source"] = body.source.strip()
+    try:
+        await db.shifts.insert_one(dict(doc))
+    except DuplicateKeyError:
+        # Same import submitted twice concurrently: return the stored one.
+        existing = await db.shifts.find_one(
+            {"user_id": current_user["id"], "import_key": import_key}, {"_id": 0}
+        )
+        if existing:
+            return {**_serialize_shift(existing), "duplicate": True}
+        raise
     return _serialize_shift(doc)
 
 
@@ -1352,6 +1428,24 @@ async def update_shift(
         raise HTTPException(status_code=404, detail="Shift not found")
     _require_current_month_or_plus(current_user, existing["date"])
     updates = {k: v for k, v in body.dict(exclude_unset=True).items() if v is not None}
+    if "code" in updates:
+        cleaned = _clean_code(updates["code"])
+        if cleaned:
+            updates["code"] = cleaned
+        else:
+            updates.pop("code")
+    if "import_key" in updates:
+        key = updates["import_key"].strip()
+        if not key:
+            updates.pop("import_key")
+        else:
+            clash = await db.shifts.find_one(
+                {"user_id": current_user["id"], "import_key": key, "id": {"$ne": shift_id}},
+                {"_id": 0, "id": 1},
+            )
+            if clash:
+                raise HTTPException(status_code=409, detail="Another shift already has this import_key")
+            updates["import_key"] = key
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     updates["updated_at"] = datetime.now(timezone.utc)
@@ -1491,7 +1585,7 @@ def _build_xlsx(user: dict, month: str, shifts: list[dict]) -> bytes:
         row_vals = [
             s.get("date", ""),
             day_name,
-            SHIFT_TYPE_LABELS.get(s.get("type", ""), s.get("type", "")),
+            shift_label(s),
             s.get("start_time") or "",
             s.get("end_time") or "",
             s.get("location") or "",
@@ -1518,7 +1612,7 @@ def _build_email_body(user: dict, month: str, shifts: list[dict]) -> str:
         lines.append("No draft shifts have been added for this month yet.")
     else:
         for s in shifts:
-            label = SHIFT_TYPE_LABELS.get(s.get("type", ""), s.get("type", ""))
+            label = shift_label(s)
             times = ""
             if s.get("start_time") and s.get("end_time"):
                 times = f" · {s['start_time']}–{s['end_time']}"
@@ -1550,7 +1644,7 @@ def _build_email_html(user: dict, month: str, shifts: list[dict]) -> str:
         )
     else:
         for s in shifts:
-            label = SHIFT_TYPE_LABELS.get(s.get("type", ""), s.get("type", ""))
+            label = shift_label(s)
             time_str = ""
             if s.get("start_time") or s.get("end_time"):
                 time_str = f"{_e(s.get('start_time') or '—')} → {_e(s.get('end_time') or '—')}"

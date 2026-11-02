@@ -21,7 +21,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { DashboardHeader } from "@/src/components/DashboardHeader";
 import { useAuth } from "@/src/context/AuthContext";
 import { api, isPlusRequired, Shift } from "@/src/lib/api";
-import { colors, radius, shiftTheme, spacing } from "@/src/theme/colors";
+import { colors, radius, shiftLabel, shiftTheme, spacing } from "@/src/theme/colors";
 import { currentMonthKey, monthLabel, shiftDateDisplay } from "@/src/utils/dateUtils";
 import { saveAndShareXlsx } from "@/src/utils/downloadXlsx";
 import { openDraftPlanMail } from "@/src/utils/mailComposer";
@@ -461,7 +461,7 @@ export default function PlannerScreen() {
                         ]}
                       >
                         <Text style={[styles.rowPillText, { color: th.text }]}>
-                          {th.label}
+                          {shiftLabel(s)}
                         </Text>
                       </View>
                       {(s.start_time || s.end_time) && (

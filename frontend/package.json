@@ -9,7 +9,9 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test": "vitest run",
+    "test:fixtures": "python3 test-fixtures/rosters/generate.py"
   },
   "dependencies": {
     "@expo/metro-runtime": "6.1.2",
@@ -41,6 +43,7 @@
     "expo-text-extractor": "2.0.0",
     "expo-updates": "~29.0.20",
     "expo-web-browser": "15.0.11",
+    "fflate": "0.8.3",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
@@ -61,7 +64,8 @@
     "eslint": "9.25.0",
     "eslint-config-expo": "10.0.0",
     "expo-doctor": "1.19.8",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
   },
   "resolutions": {
     "@eslint/plugin-kit": "0.3.4",

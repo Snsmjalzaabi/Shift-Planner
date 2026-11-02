@@ -77,3 +77,11 @@ export const radius = {
   xl: 20,
   pill: 999,
 };
+
+/**
+ * Text shown on a shift chip: the roster code exactly as written (D, N, X,
+ * XL, AL…) for imported shifts, otherwise the type label. Colours still come
+ * from shiftTheme, so the visual design is unchanged.
+ */
+export const shiftLabel = (s: { type: string; code?: string | null }) =>
+  s.code || shiftTheme(s.type).label;

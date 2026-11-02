@@ -30,6 +30,11 @@ export type Shift = {
   is_draft: boolean;
   created_at: string;
   updated_at: string;
+  /** Roster code exactly as written (D, N, X, XL, AL…), for imported shifts. */
+  code?: string | null;
+  /** Identity of an imported roster assignment (employee + date). */
+  import_key?: string | null;
+  source?: string | null;
 };
 
 export type LoginResponse = {
@@ -132,6 +137,8 @@ export const api = {
 
   me: (token: string) => request<AuthUser>("/auth/me", { token }),
 
+  serverInfo: () => request<{ status: string; features?: string[] }>("/"),
+
   branding: () =>
     request<{
       app_name: string;
@@ -167,6 +174,9 @@ export const api = {
       location?: string | null;
       note?: string | null;
       is_draft?: boolean;
+      code?: string | null;
+      import_key?: string | null;
+      source?: string | null;
     },
   ) =>
     request<Shift>("/shifts", {
@@ -185,6 +195,8 @@ export const api = {
       location: string | null;
       note: string | null;
       is_draft: boolean;
+      code: string;
+      import_key: string;
     }>,
   ) =>
     request<Shift>(`/shifts/${id}`, {

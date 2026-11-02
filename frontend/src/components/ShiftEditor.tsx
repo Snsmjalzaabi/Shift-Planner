@@ -17,7 +17,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { api, isPlusRequired, Shift } from "@/src/lib/api";
-import { colors, radius, shiftTheme, spacing } from "@/src/theme/colors";
+import { colors, radius, shiftLabel, shiftTheme, spacing } from "@/src/theme/colors";
 import { shiftDateDisplay } from "@/src/utils/dateUtils";
 type Props = {
   visible: boolean;
@@ -193,7 +193,7 @@ export function ShiftEditor({
                               ]}
                             >
                               <Text style={[styles.pillText, { color: th.text }]}>
-                                {th.label}
+                                {shiftLabel(s)}
                               </Text>
                             </View>
                             <Text style={styles.existingMeta}>

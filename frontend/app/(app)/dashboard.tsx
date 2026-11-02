@@ -16,7 +16,7 @@ import { DashboardHeader } from "@/src/components/DashboardHeader";
 import { ShiftEditor } from "@/src/components/ShiftEditor";
 import { useAuth } from "@/src/context/AuthContext";
 import { api, Shift } from "@/src/lib/api";
-import { colors, radius, shiftTheme, spacing } from "@/src/theme/colors";
+import { colors, radius, shiftLabel, shiftTheme, spacing } from "@/src/theme/colors";
 import {
   buildMonthGrid,
   monthLabel,
@@ -317,7 +317,7 @@ export default function DashboardScreen() {
                                 style={[styles.chipText, { color: th.text }]}
                                 numberOfLines={1}
                               >
-                                {th.label}
+                                {shiftLabel(s)}
                               </Text>
                             </View>
                           );
@@ -387,7 +387,7 @@ export default function DashboardScreen() {
                     />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.currentDate}>{shiftDateDisplay(s.date)}</Text>
-                      <Text style={[styles.currentLabel, { color: th.text }]}>{th.label}</Text>
+                      <Text style={[styles.currentLabel, { color: th.text }]}>{shiftLabel(s)}</Text>
                       {s.start_time && s.end_time && (
                         <Text style={styles.currentTime}>
                           {s.start_time} → {s.end_time}

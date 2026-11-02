@@ -1,13 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
-import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Platform,
   ScrollView,
   StyleSheet,
@@ -17,70 +17,129 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import readExcelFile from "read-excel-file/universal";
 
 import { DashboardHeader } from "@/src/components/DashboardHeader";
 import { useAuth } from "@/src/context/AuthContext";
 import { api, isPlusRequired } from "@/src/lib/api";
-import { colors, radius, spacing } from "@/src/theme/colors";
+import { KNOWN_CODES, normaliseTypedCode } from "@/src/roster/codes";
+import { createDeviceOcrEngine, loadRosterImage } from "@/src/roster/device";
 import {
-  codeToNote,
-  codeToShiftType,
-  ImportCandidate,
-  isValidImportDate,
-  parseRecognizedText,
-  parseWorkbook,
-  PositionedText,
-  ScheduleCode,
-} from "@/src/utils/importSchedule";
+  analyseRoster,
+  EmployeeRow,
+  extractEmployee,
+  GridSource,
+  RosterAnalysis,
+  summarise,
+} from "@/src/roster/extract";
+import { createImageGridSource } from "@/src/roster/imageSource";
+import {
+  applyImport,
+  CalendarShift,
+  PlannedAction,
+  replaceTarget,
+  Resolution,
+  shiftDisplayCode,
+} from "@/src/roster/importPlan";
+import {
+  buildPlan,
+  itemProblems,
+  monthsCovered,
+  ReviewItem,
+  reviewCounts,
+  toReviewItems,
+} from "@/src/roster/session";
+import { createSheetGridSource } from "@/src/roster/sheetSource";
+import { buildTable } from "@/src/roster/table";
+import { colors, radius, spacing } from "@/src/theme/colors";
 
-const CODES: { code: ScheduleCode; label: string }[] = [
-  { code: "D", label: "Day" },
-  { code: "N", label: "Night" },
-  { code: "OFF", label: "Off" },
-  { code: "AL", label: "Annual leave" },
-];
+type Stage = "source" | "employee" | "review";
+
+type Loaded = {
+  source: GridSource;
+  analysis: RosterAnalysis;
+  name: string;
+  kind: "roster-image" | "roster-xlsx";
+  image?: { uri: string; width: number; height: number };
+};
 
 export default function ImportScheduleScreen() {
   const { token } = useAuth();
   const router = useRouter();
-  const [candidates, setCandidates] = useState<ImportCandidate[]>([]);
-  const [sourceName, setSourceName] = useState("");
-  const [busy, setBusy] = useState<"image" | "xlsx" | "saving" | null>(null);
+  const [stage, setStage] = useState<Stage>("source");
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const [employeeLine, setEmployeeLine] = useState<number | null>(null);
+  const [employeeName, setEmployeeName] = useState("");
+  const [items, setItems] = useState<ReviewItem[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [existing, setExisting] = useState<CalendarShift[]>([]);
+  const [resolutions, setResolutions] = useState<Record<string, Resolution>>({});
+  const [busy, setBusy] = useState<"image" | "xlsx" | "row" | "saving" | null>(null);
+  const [progress, setProgress] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [savedCount, setSavedCount] = useState(0);
   const [currentRoster, setCurrentRoster] = useState<{
     today_count: number;
     total: number;
     loaded: boolean;
   } | null>(null);
   const [currentLoading, setCurrentLoading] = useState(false);
+  const progressAt = useRef(0);
 
-  const selected = useMemo(
-    () => candidates.filter((candidate) => candidate.selected),
-    [candidates],
+  const plan: PlannedAction[] = useMemo(
+    () => (stage === "review" ? buildPlan(employeeName, items, existing) : []),
+    [stage, employeeName, items, existing],
   );
-  const unresolved = selected.filter(
-    (candidate) =>
-      !candidate.acknowledged ||
-      !candidate.code ||
-      !candidate.type ||
-      !isValidImportDate(candidate.date),
-  );
-  const canSave = selected.length > 0 && unresolved.length === 0 && !busy;
+  const counts = useMemo(() => reviewCounts(items, plan), [items, plan]);
+  const planByDate = useMemo(() => {
+    const map = new Map<string, PlannedAction>();
+    for (const action of plan) if (!map.has(action.item.date)) map.set(action.item.date, action);
+    return map;
+  }, [plan]);
+  const range = useMemo(() => {
+    const dates = items.map((i) => i.date).filter(Boolean).sort();
+    return dates.length ? `${dates[0]} → ${dates[dates.length - 1]}` : "";
+  }, [items]);
+  const writes = plan.filter(
+    (a) => a.kind === "create" || (a.kind === "conflict" && resolutions[a.item.date] === "replace"),
+  ).length;
+  const canSave = stage === "review" && counts.unresolved === 0 && writes > 0 && !busy;
 
-  const loadCandidates = (items: ImportCandidate[], name: string) => {
-    setError(null);
-    setSavedCount(0);
-    if (items.length === 0) {
-      setCandidates([]);
-      setSourceName("");
-      setError(
-        "No dated D, N, X/OFF, or AL shifts were found. Try a clearer image or an Excel sheet with dates and shift codes.",
-      );
+  // Throttle progress text so the UI is not re-rendered for every cell.
+  const report = (message: string) => {
+    const now = Date.now();
+    if (now - progressAt.current > 250) {
+      progressAt.current = now;
+      setProgress(message);
+    }
+  };
+
+  const fallbackMonth = () => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() + 1 };
+  };
+
+  const startAnalysis = async (
+    source: GridSource,
+    name: string,
+    kind: Loaded["kind"],
+    image?: Loaded["image"],
+  ) => {
+    const { analysis, error: problem } = await analyseRoster(source, {
+      fallback: fallbackMonth(),
+      progress: report,
+    });
+    if (!analysis) {
+      setError(problem ?? "The roster could not be read.");
       return;
     }
-    setCandidates(items);
-    setSourceName(name);
+    if (!analysis.employees.length) {
+      setError("A date header was found, but no employee rows below it.");
+      return;
+    }
+    setLoaded({ source, analysis, name, kind, image });
+    setEmployeeLine(null);
+    setEmployeeName("");
+    setStage("employee");
   };
 
   const readImage = async (mode: "camera" | "library") => {
@@ -88,7 +147,6 @@ export default function ImportScheduleScreen() {
       setError("Photo recognition is available in the Android and iOS app.");
       return;
     }
-    setBusy("image");
     setError(null);
     try {
       if (mode === "camera") {
@@ -100,60 +158,40 @@ export default function ImportScheduleScreen() {
       }
       const result =
         mode === "camera"
-          ? await ImagePicker.launchCameraAsync({
-              mediaTypes: ["images"],
-              quality: 1,
-            })
-          : await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ["images"],
-              quality: 1,
-            });
+          ? await ImagePicker.launchCameraAsync({ mediaTypes: ["images"], quality: 1 })
+          : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 1 });
       if (result.canceled) return;
-
+      setBusy("image");
+      setProgress("Finding the table…");
       const asset = result.assets[0];
-      const { isSupported, extractTextFromImage } = await import(
-        "expo-text-extractor"
-      );
-      if (!isSupported) {
+      const engine = await createDeviceOcrEngine();
+      if (!engine) {
+        setError("Text recognition is not available on this device. Try importing an Excel file instead.");
+        return;
+      }
+      const image = await loadRosterImage(asset.uri, { width: asset.width, height: asset.height });
+      const table = buildTable(image);
+      if (!table) {
         setError(
-          "Text recognition is not available on this device. Try importing an Excel file instead.",
+          "No table grid was found. Use a straight, uncropped screenshot of the roster with its row and column lines visible.",
         );
         return;
       }
-      // Normalize image orientation before OCR. expo-image-picker preserves
-      // EXIF rotation metadata, but expo-text-extractor's native modules do not
-      // apply it (iOS VNImageRequestHandler defaults to .up, Android ML Kit
-      // may skip rotation). Saving through the manipulator bakes the correct
-      // pixel orientation into the output file.
-      const normalized = await manipulateAsync(
-        asset.uri,
-        [{ resize: { width: 1080 } }],
-        { compress: 0.85, format: SaveFormat.JPEG },
-      );
-      const lines = await extractTextFromImage(normalized.uri);
-      if (!lines || lines.length === 0) {
-        setError(
-          "No text was found in the image. Ensure the photo is well-lit, the schedule is fully visible, and text is not rotated. Try the Excel import option for more reliable results.",
-        );
-        return;
-      }
-      const elements: PositionedText[] = [];
-      loadCandidates(
-        parseRecognizedText(elements, lines.join("\n")),
-        asset.fileName || "Schedule photo",
-      );
+      const source = createImageGridSource(image, table, engine);
+      await startAnalysis(source, asset.fileName || "Schedule image", "roster-image", {
+        uri: asset.uri,
+        width: image.width,
+        height: image.height,
+      });
     } catch (caught: any) {
-      setError(
-        caught?.message ||
-          "The schedule image could not be processed. Try a clearer photo or use the Excel import option.",
-      );
+      setError(caught?.message || "The schedule image could not be processed. Try a clearer image or the Excel import.");
     } finally {
       setBusy(null);
+      setProgress("");
     }
   };
 
   const readXlsx = async () => {
-    setBusy("xlsx");
     setError(null);
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -163,15 +201,55 @@ export default function ImportScheduleScreen() {
         base64: false,
       });
       if (result.canceled) return;
+      setBusy("xlsx");
       const asset = result.assets[0];
-      const data = asset.file
-        ? await asset.file.arrayBuffer()
-        : await new File(asset.uri).arrayBuffer();
-      loadCandidates(await parseWorkbook(data), asset.name || "Excel schedule");
+      const data = asset.file ? await asset.file.arrayBuffer() : await new File(asset.uri).arrayBuffer();
+      const sheets = await readExcelFile(data);
+      let lastError = "No dates were found in the workbook.";
+      for (const sheet of sheets) {
+        const source = createSheetGridSource(sheet.data, sheet.sheet);
+        const { analysis, error: problem } = await analyseRoster(source, { fallback: fallbackMonth() });
+        if (analysis && analysis.employees.length) {
+          await startAnalysis(source, asset.name || "Excel schedule", "roster-xlsx");
+          return;
+        }
+        if (problem) lastError = problem;
+      }
+      setError(lastError);
     } catch (caught: any) {
       setError(caught?.message || "The Excel schedule could not be read.");
     } finally {
       setBusy(null);
+      setProgress("");
+    }
+  };
+
+  const chooseEmployee = (employee: EmployeeRow) => {
+    setEmployeeLine(employee.line);
+    setEmployeeName(employee.name);
+  };
+
+  const readEmployeeRow = async () => {
+    if (!loaded || employeeLine === null || !token) return;
+    setBusy("row");
+    setError(null);
+    try {
+      const cells = await extractEmployee(loaded.source, loaded.analysis, employeeLine, report);
+      const summary = summarise(cells, loaded.analysis);
+      const nextItems = toReviewItems(cells);
+      const months = monthsCovered(nextItems);
+      const shifts: CalendarShift[] = [];
+      for (const month of months) shifts.push(...(await api.listShifts(token, month)));
+      setItems(nextItems);
+      setWarnings(summary.warnings);
+      setExisting(shifts);
+      setResolutions({});
+      setStage("review");
+    } catch (caught: any) {
+      setError(caught?.message || "This row could not be read.");
+    } finally {
+      setBusy(null);
+      setProgress("");
     }
   };
 
@@ -202,77 +280,72 @@ export default function ImportScheduleScreen() {
     router.replace("/(app)/dashboard");
   };
 
-  const updateCandidate = (id: string, patch: Partial<ImportCandidate>) => {
-    setCandidates((current) =>
-      current.map((candidate) =>
-        candidate.id === id ? { ...candidate, ...patch } : candidate,
-      ),
-    );
+  const updateItem = (id: string, patch: Partial<ReviewItem>) => {
+    setItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   };
 
-  const chooseCode = (candidate: ImportCandidate, code: ScheduleCode) => {
-    updateCandidate(candidate.id, {
-      code,
-      type: codeToShiftType(code),
-      acknowledged: true,
-      issues: [],
-    });
-  };
-
-  const saveDrafts = async () => {
-    if (!token || !canSave) return;
+  const saveImport = async () => {
+    if (!token || !canSave || !loaded) return;
     setBusy("saving");
     setError(null);
-    const results = await Promise.allSettled(
-      selected.map((candidate) =>
-        api.createShift(token, {
-          date: candidate.date,
-          type: candidate.type!,
-          start_time:
-            candidate.code === "D" ? "07:00" : candidate.code === "N" ? "19:00" : null,
-          end_time:
-            candidate.code === "D" ? "19:00" : candidate.code === "N" ? "07:00" : null,
-          note: codeToNote(candidate.code!),
-          is_draft: true,
-        }),
-      ),
-    );
-
-    const failedIds = new Set<string>();
-    let firstFailure: unknown;
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        failedIds.add(selected[index].id);
-        firstFailure ||= result.reason;
+    try {
+      // Roster codes must be stored as written; refuse to import into a
+      // server that would silently drop them.
+      const info = await api.serverInfo();
+      if (!info.features?.includes("shift_code") || !info.features.includes("import_key")) {
+        setError("The server needs an update before roster codes can be saved. Nothing was imported.");
+        return;
       }
-    });
-    const completed = results.length - failedIds.size;
-    setSavedCount((count) => count + completed);
-    setCandidates((current) => current.filter((candidate) => failedIds.has(candidate.id)));
-    setBusy(null);
-
-    if (firstFailure && isPlusRequired(firstFailure)) {
-      router.push("/(app)/upgrade");
-      return;
-    }
-    if (failedIds.size > 0) {
-      setError(
-        `${completed} draft${completed === 1 ? "" : "s"} saved; ${failedIds.size} failed. Review the remaining rows and try again.`,
+      const result = await applyImport(
+        plan,
+        resolutions,
+        {
+          create: (body) => api.createShift(token, body),
+          update: (id, body) => api.updateShift(token, id, body),
+        },
+        loaded.kind,
       );
-      return;
+      const firstFailure = result.failed[0]?.error;
+      if (firstFailure && isPlusRequired(firstFailure)) {
+        router.push("/(app)/upgrade");
+        return;
+      }
+      const lines = [
+        `${result.created} added`,
+        result.replaced ? `${result.replaced} replaced` : "",
+        result.kept ? `${result.kept} kept as they were` : "",
+        result.unchanged ? `${result.unchanged} already on the calendar` : "",
+        result.failed.length ? `${result.failed.length} failed` : "",
+      ].filter(Boolean);
+      if (result.failed.length) {
+        setError(`Import finished with errors: ${lines.join(" · ")}. Review and try again.`);
+        const months = monthsCovered(items);
+        const shifts: CalendarShift[] = [];
+        for (const month of months) shifts.push(...(await api.listShifts(token, month)));
+        setExisting(shifts);
+        return;
+      }
+      Alert.alert("Import complete", `${employeeName}: ${lines.join(" · ")}.`, [
+        { text: "View calendar", onPress: () => router.replace("/(app)/dashboard") },
+      ]);
+      reset();
+    } catch (caught: any) {
+      setError(caught?.message || "The import could not be saved.");
+    } finally {
+      setBusy(null);
     }
-    Alert.alert(
-      "Import complete",
-      `${completed} draft shift${completed === 1 ? "" : "s"} saved. You can review them on the Calendar tab.`,
-      [{ text: "View calendar", onPress: () => router.replace("/(app)/dashboard") }],
-    );
   };
 
   const reset = () => {
-    setCandidates([]);
-    setSourceName("");
+    setStage("source");
+    setLoaded(null);
+    setEmployeeLine(null);
+    setEmployeeName("");
+    setItems([]);
+    setWarnings([]);
+    setExisting([]);
+    setResolutions({});
     setError(null);
-    setSavedCount(0);
   };
 
   return (
@@ -283,7 +356,7 @@ export default function ImportScheduleScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {candidates.length === 0 ? (
+        {stage === "source" && (
           <>
             <Text style={styles.eyebrow}>Schedule import</Text>
             <Text style={styles.title}>Bring in your roster</Text>
@@ -357,10 +430,7 @@ export default function ImportScheduleScreen() {
                 </Text>
               )}
               {currentLoading ? (
-                <ActivityIndicator
-                  color={colors.neon}
-                  style={{ marginTop: spacing.xs }}
-                />
+                <ActivityIndicator color={colors.neon} style={{ marginTop: spacing.xs }} />
               ) : (
                 <TouchableOpacity
                   style={[styles.primaryAction, { marginTop: spacing.xs }]}
@@ -368,14 +438,8 @@ export default function ImportScheduleScreen() {
                   disabled={!!busy}
                   testID="import-current-roster"
                 >
-                  <Ionicons
-                    name="cloud-download-outline"
-                    size={18}
-                    color="#140C27"
-                  />
-                  <Text style={styles.primaryActionText}>
-                    Fetch &amp; plot current roster
-                  </Text>
+                  <Ionicons name="cloud-download-outline" size={18} color="#140C27" />
+                  <Text style={styles.primaryActionText}>Fetch &amp; plot current roster</Text>
                 </TouchableOpacity>
               )}
               {currentRoster && currentRoster.loaded && (
@@ -383,36 +447,40 @@ export default function ImportScheduleScreen() {
                   style={[styles.secondaryAction, { marginTop: spacing.xs }]}
                   onPress={viewCalendar}
                 >
-                  <Ionicons
-                    name="calendar-outline"
-                    size={17}
-                    color={colors.textPrimary}
-                  />
+                  <Ionicons name="calendar-outline" size={17} color={colors.textPrimary} />
                   <Text style={styles.secondaryActionText}>View on Calendar</Text>
                 </TouchableOpacity>
               )}
             </View>
 
             <View style={styles.codeGuide}>
-              <Text style={styles.codeGuideTitle}>Supported codes</Text>
+              <Text style={styles.codeGuideTitle}>Codes are kept exactly as written</Text>
               <View style={styles.codeRow}>
-                {CODES.map(({ code, label }) => (
+                {KNOWN_CODES.map((code) => (
                   <View key={code} style={styles.codePill}>
                     <Text style={styles.codeValue}>{code}</Text>
-                    <Text style={styles.codeLabel}>{label}</Text>
                   </View>
                 ))}
+                <View style={styles.codePill}>
+                  <Text style={styles.codeLabel}>Other codes are flagged for review</Text>
+                </View>
               </View>
             </View>
           </>
-        ) : (
+        )}
+
+        {stage === "employee" && loaded && (
           <>
             <View style={styles.reviewHeader}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.eyebrow}>Review before saving</Text>
-                <Text style={styles.reviewTitle}>{sourceName}</Text>
+                <Text style={styles.eyebrow}>Choose employee</Text>
+                <Text style={styles.reviewTitle}>{loaded.name}</Text>
                 <Text style={styles.reviewMeta}>
-                  {selected.length} selected · {unresolved.length} need review
+                  {loaded.analysis.employees.length} row
+                  {loaded.analysis.employees.length === 1 ? "" : "s"} ·{" "}
+                  {loaded.analysis.dates.length} date
+                  {loaded.analysis.dates.length === 1 ? "" : "s"}
+                  {datesRange(loaded.analysis)}
                 </Text>
               </View>
               <TouchableOpacity onPress={reset} style={styles.resetButton}>
@@ -421,24 +489,119 @@ export default function ImportScheduleScreen() {
             </View>
 
             <View style={styles.warningBox}>
-              <Ionicons name="shield-checkmark-outline" size={20} color={colors.neonHover} />
+              <Ionicons name="person-circle-outline" size={20} color={colors.neonHover} />
               <Text style={styles.warningText}>
-                Check dates and codes against the source. Rows marked “Needs review” cannot be saved until you confirm or edit them.
+                Pick your row. Only that row is read, so shifts from other employees are never combined with yours.
               </Text>
             </View>
+            <IssueList issues={loaded.analysis.issues} />
+            {loaded.image && <OriginalImage image={loaded.image} />}
 
-            {candidates.map((candidate) => (
+            {loaded.analysis.employees.map((employee) => {
+              const active = employee.line === employeeLine;
+              return (
+                <TouchableOpacity
+                  key={employee.line}
+                  style={styles.reviewCard}
+                  onPress={() => chooseEmployee(employee)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: active }}
+                  testID={`employee-${employee.line}`}
+                >
+                  <View style={styles.reviewCardTop}>
+                    <Ionicons
+                      name={active ? "radio-button-on" : "radio-button-off"}
+                      size={22}
+                      color={active ? colors.neonHover : colors.textMuted}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.sourceTitle} numberOfLines={1}>
+                        {employee.name}
+                      </Text>
+                      <Text style={styles.originalText} numberOfLines={1}>
+                        Read as: {employee.parts.join(" · ") || "(no name)"} · {employee.filled} filled cell
+                        {employee.filled === 1 ? "" : "s"}
+                      </Text>
+                    </View>
+                  </View>
+                  {active && (
+                    <>
+                      <Text style={styles.fieldLabel}>Name (correct it if it was misread)</Text>
+                      <TextInput
+                        value={employeeName}
+                        onChangeText={setEmployeeName}
+                        style={styles.dateInput}
+                        autoCapitalize="words"
+                        testID="employee-name-input"
+                      />
+                    </>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+
+            <TouchableOpacity
+              style={[
+                styles.saveButton,
+                (employeeLine === null || !employeeName.trim() || !!busy) && styles.disabledButton,
+              ]}
+              onPress={readEmployeeRow}
+              disabled={employeeLine === null || !employeeName.trim() || !!busy}
+              testID="confirm-employee"
+            >
+              {busy === "row" ? (
+                <ActivityIndicator color="#140C27" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-done-outline" size={19} color="#140C27" />
+                  <Text style={styles.saveText}>Read this row</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </>
+        )}
+
+        {stage === "review" && loaded && (
+          <>
+            <View style={styles.reviewHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.eyebrow}>Review before import</Text>
+                <Text style={styles.reviewTitle}>{employeeName}</Text>
+                <Text style={styles.reviewMeta}>{range}</Text>
+                <Text style={styles.reviewMeta} testID="review-counts">
+                  {counts.detected} detected · {counts.uncertain} uncertain · {counts.skipped} skipped ·{" "}
+                  {counts.duplicates} duplicate{counts.duplicates === 1 ? "" : "s"}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setStage("employee")} style={styles.resetButton}>
+                <Text style={styles.resetText}>Change row</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.warningBox}>
+              <Ionicons name="shield-checkmark-outline" size={20} color={colors.neonHover} />
+              <Text style={styles.warningText}>
+                Check every date and code against the original. Rows marked “Needs review” cannot be imported until you
+                confirm, correct or exclude them. Blank cells are never imported.
+              </Text>
+            </View>
+            <IssueList issues={warnings} />
+            {loaded.image && <OriginalImage image={loaded.image} />}
+
+            {items.map((item) => (
               <ReviewRow
-                key={candidate.id}
-                candidate={candidate}
-                onUpdate={(patch) => updateCandidate(candidate.id, patch)}
-                onChooseCode={(code) => chooseCode(candidate, code)}
+                key={item.id}
+                item={item}
+                action={item.selected ? planByDate.get(item.date.trim()) : undefined}
+                resolution={resolutions[item.date.trim()] ?? "keep"}
+                onResolve={(value) => setResolutions((current) => ({ ...current, [item.date.trim()]: value }))}
+                onUpdate={(patch) => updateItem(item.id, patch)}
               />
             ))}
 
             <TouchableOpacity
               style={[styles.saveButton, !canSave && styles.disabledButton]}
-              onPress={saveDrafts}
+              onPress={saveImport}
               disabled={!canSave}
               testID="save-imported-drafts"
             >
@@ -448,26 +611,33 @@ export default function ImportScheduleScreen() {
                 <>
                   <Ionicons name="save-outline" size={19} color="#140C27" />
                   <Text style={styles.saveText}>
-                    Save {selected.length} draft{selected.length === 1 ? "" : "s"}
+                    Import {writes} shift{writes === 1 ? "" : "s"}
                   </Text>
                 </>
               )}
             </TouchableOpacity>
-            {unresolved.length > 0 && (
+            {counts.unresolved > 0 ? (
               <Text style={styles.blockedText}>
-                Confirm or exclude {unresolved.length} unresolved row
-                {unresolved.length === 1 ? "" : "s"} to continue.
+                Confirm, correct or exclude {counts.unresolved} row{counts.unresolved === 1 ? "" : "s"} to continue.
               </Text>
-            )}
+            ) : writes === 0 ? (
+              <Text style={styles.blockedText}>Nothing new to import — these shifts are already on your calendar.</Text>
+            ) : null}
           </>
         )}
 
-        {!!busy && busy !== "saving" && (
+        {!!busy && busy !== "saving" && busy !== "row" && (
           <View style={styles.loadingBox}>
             <ActivityIndicator color={colors.neon} />
             <Text style={styles.loadingText}>
-              {busy === "image" ? "Reading schedule image…" : "Reading Excel schedule…"}
+              {progress || (busy === "image" ? "Reading schedule image…" : "Reading Excel schedule…")}
             </Text>
+          </View>
+        )}
+        {busy === "row" && !!progress && (
+          <View style={styles.loadingBox}>
+            <ActivityIndicator color={colors.neon} />
+            <Text style={styles.loadingText}>{progress}</Text>
           </View>
         )}
         {!!error && (
@@ -476,12 +646,14 @@ export default function ImportScheduleScreen() {
             <Text style={styles.errorText}>{error}</Text>
           </View>
         )}
-        {savedCount > 0 && candidates.length > 0 && (
-          <Text style={styles.savedText}>{savedCount} draft shifts saved so far.</Text>
-        )}
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+function datesRange(analysis: RosterAnalysis): string {
+  const dates = analysis.dates.map((d) => d.iso).filter((d): d is string => !!d).sort();
+  return dates.length ? ` · ${dates[0]} → ${dates[dates.length - 1]}` : "";
 }
 
 function ActionButton({
@@ -503,88 +675,155 @@ function ActionButton({
   );
 }
 
-function ReviewRow({
-  candidate,
-  onUpdate,
-  onChooseCode,
-}: {
-  candidate: ImportCandidate;
-  onUpdate: (patch: Partial<ImportCandidate>) => void;
-  onChooseCode: (code: ScheduleCode) => void;
-}) {
-  const needsReview =
-    candidate.selected &&
-    (!candidate.acknowledged || !candidate.code || !isValidImportDate(candidate.date));
+function IssueList({ issues }: { issues: string[] }) {
+  if (!issues.length) return null;
   return (
-    <View style={[styles.reviewCard, !candidate.selected && styles.reviewCardExcluded]}>
+    <View style={styles.errorBox} testID="import-warnings">
+      <Ionicons name="warning-outline" size={20} color={colors.danger} />
+      <View style={{ flex: 1, gap: spacing.xs }}>
+        {issues.map((issue) => (
+          <Text key={issue} style={styles.errorText}>
+            {issue}
+          </Text>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function OriginalImage({ image }: { image: { uri: string; width: number; height: number } }) {
+  const height = 200;
+  const width = Math.max(1, Math.round((image.width / Math.max(1, image.height)) * height));
+  return (
+    <View style={styles.reviewCard}>
+      <Text style={styles.fieldLabel}>Original image — scroll to compare</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator nestedScrollEnabled>
+        <Image
+          source={{ uri: image.uri }}
+          style={{ width, height, borderRadius: radius.sm }}
+          resizeMode="contain"
+          accessibilityLabel="Original roster image"
+        />
+      </ScrollView>
+    </View>
+  );
+}
+
+function ReviewRow({
+  item,
+  action,
+  resolution,
+  onResolve,
+  onUpdate,
+}: {
+  item: ReviewItem;
+  action?: PlannedAction;
+  resolution: Resolution;
+  onResolve: (value: Resolution) => void;
+  onUpdate: (patch: Partial<ReviewItem>) => void;
+}) {
+  const problems = itemProblems(item);
+  const needsReview = item.selected && problems.length > 0;
+  const typed = normaliseTypedCode(item.code);
+  const isOther = !!item.code && !(KNOWN_CODES as readonly string[]).includes(typed ?? "");
+  const conflict = action?.kind === "conflict" ? action : null;
+  const canReplace = !!conflict && !!replaceTarget(conflict);
+  return (
+    <View style={[styles.reviewCard, !item.selected && styles.reviewCardExcluded]}>
       <View style={styles.reviewCardTop}>
         <TouchableOpacity
-          onPress={() => onUpdate({ selected: !candidate.selected })}
+          onPress={() => onUpdate({ selected: !item.selected })}
           accessibilityRole="checkbox"
-          accessibilityState={{ checked: candidate.selected }}
+          accessibilityState={{ checked: item.selected }}
         >
           <Ionicons
-            name={candidate.selected ? "checkmark-circle" : "ellipse-outline"}
+            name={item.selected ? "checkmark-circle" : "ellipse-outline"}
             size={24}
-            color={candidate.selected ? colors.neonHover : colors.textMuted}
+            color={item.selected ? colors.neonHover : colors.textMuted}
           />
         </TouchableOpacity>
         <Text style={styles.originalText} numberOfLines={1}>
-          Read as: {candidate.originalText}
+          {item.status === "blank" ? "Blank in roster — not imported" : `Read as: ${item.raw || "(unreadable)"}`}
         </Text>
         {needsReview && <Text style={styles.needsReview}>Needs review</Text>}
+        {action?.kind === "unchanged" && <Text style={styles.savedInline}>Already imported</Text>}
       </View>
 
       <Text style={styles.fieldLabel}>Date (YYYY-MM-DD)</Text>
       <TextInput
-        value={candidate.date}
-        onChangeText={(date) =>
-          onUpdate({ date, acknowledged: true, issues: [] })
-        }
-        style={[
-          styles.dateInput,
-          candidate.selected && !isValidImportDate(candidate.date) && styles.invalidInput,
-        ]}
-        editable={candidate.selected}
+        value={item.date}
+        onChangeText={(date) => onUpdate({ date, acknowledged: true })}
+        style={[styles.dateInput, item.selected && problems.some((p) => p.includes("date")) && styles.invalidInput]}
+        editable={item.selected}
         autoCapitalize="none"
         keyboardType="numbers-and-punctuation"
       />
 
-      <Text style={styles.fieldLabel}>Shift code</Text>
+      <Text style={styles.fieldLabel}>Shift code (as written on the roster)</Text>
       <View style={styles.choiceRow}>
-        {CODES.map(({ code }) => (
+        {KNOWN_CODES.map((code) => (
           <TouchableOpacity
             key={code}
-            style={[styles.choice, candidate.code === code && styles.choiceActive]}
-            onPress={() => onChooseCode(code)}
-            disabled={!candidate.selected}
+            style={[styles.choice, typed === code && styles.choiceActive]}
+            onPress={() => onUpdate({ code, acknowledged: true })}
+            disabled={!item.selected}
           >
-            <Text
-              style={[
-                styles.choiceText,
-                candidate.code === code && styles.choiceTextActive,
-              ]}
-            >
-              {code}
-            </Text>
+            <Text style={[styles.choiceText, typed === code && styles.choiceTextActive]}>{code}</Text>
           </TouchableOpacity>
         ))}
       </View>
+      <TextInput
+        value={isOther ? item.code : ""}
+        onChangeText={(code) => onUpdate({ code, acknowledged: true })}
+        placeholder="Other code"
+        placeholderTextColor={colors.textMuted}
+        style={[styles.dateInput, isOther && styles.choiceActive]}
+        editable={item.selected}
+        autoCapitalize="characters"
+        maxLength={6}
+      />
 
-      {candidate.selected && !candidate.acknowledged && (
-        <TouchableOpacity
-          style={styles.confirmButton}
-          onPress={() => onUpdate({ acknowledged: true })}
-        >
+      {conflict && item.selected && (
+        <>
+          <Text style={styles.fieldLabel}>
+            Already on calendar: {conflict.existing.map(shiftDisplayCode).join(", ")}
+          </Text>
+          <View style={styles.choiceRow}>
+            {(["keep", "replace"] as const).map((value) => (
+              <TouchableOpacity
+                key={value}
+                style={[
+                  styles.choice,
+                  resolution === value && styles.choiceActive,
+                  value === "replace" && !canReplace && styles.disabledButton,
+                ]}
+                onPress={() => onResolve(value)}
+                disabled={value === "replace" && !canReplace}
+              >
+                <Text style={[styles.choiceText, resolution === value && styles.choiceTextActive]}>
+                  {value === "keep" ? "Keep existing" : `Replace with ${typed ?? "?"}`}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {!canReplace && (
+            <Text style={styles.issueText}>Several entries share this date; edit them on the Calendar instead.</Text>
+          )}
+        </>
+      )}
+
+      {item.selected && !item.acknowledged && (
+        <TouchableOpacity style={styles.confirmButton} onPress={() => onUpdate({ acknowledged: true })}>
           <Ionicons name="eye-outline" size={16} color={colors.neonHover} />
           <Text style={styles.confirmText}>I checked this row</Text>
         </TouchableOpacity>
       )}
-      {candidate.selected && candidate.issues.map((issue) => (
-        <Text key={issue} style={styles.issueText}>
-          {issue}
-        </Text>
-      ))}
+      {item.selected &&
+        item.issues.map((issue) => (
+          <Text key={issue} style={styles.issueText}>
+            {issue}
+          </Text>
+        ))}
     </View>
   );
 }
@@ -708,6 +947,7 @@ const styles = StyleSheet.create({
   reviewCardTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   originalText: { flex: 1, color: colors.textMuted, fontSize: 11 },
   needsReview: { color: colors.danger, fontSize: 10, fontWeight: "800" },
+  savedInline: { color: colors.success, fontSize: 10, fontWeight: "800" },
   fieldLabel: {
     color: colors.textMuted,
     fontSize: 10,
@@ -784,5 +1024,4 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   errorText: { flex: 1, color: colors.danger, fontSize: 12, lineHeight: 18 },
-  savedText: { color: colors.success, textAlign: "center", fontSize: 12, fontWeight: "700" },
 });

@@ -490,7 +490,7 @@ def _public_page(title: str, body: str) -> HTMLResponse:
   <main>
     <div class="brand">Foxory Shift Calendar</div>
     <h1>{safe_title}</h1>
-    <p>Last updated September 2026</p>
+    <p>Last updated November 2026</p>
     {body}
     <nav aria-label="Legal and support">
       <a href="/privacy">Privacy</a>
@@ -509,27 +509,48 @@ async def privacy_page():
     return _public_page(
         "Privacy Policy",
         """
+        <p>This privacy policy explains how <strong>Foxory</strong> ("we", "us"),
+        the developer of the <strong>Foxory Shift Calendar</strong> app for Android,
+        iOS and the web, collects, uses, shares and deletes your information.</p>
         <h2>Information we collect</h2>
         <ul>
           <li>Your email address, display name, and securely hashed password.</li>
-          <li>The shifts, notes, and schedule details you choose to save.</li>
+          <li>The shifts, roster codes, notes, and schedule details you choose to save.</li>
           <li>Subscription status and transaction identifiers, but never card details.</li>
-          <li>Limited server logs used for reliability and abuse prevention.</li>
+          <li>Limited server logs (time, request path, status and IP address) used for
+          reliability and abuse prevention.</li>
         </ul>
+        <p>We do not collect your contacts, location, microphone, health data or
+        advertising identifiers.</p>
         <h2>How we use information</h2>
         <p>We use this information to provide your account, synchronize your schedule,
         generate exports, confirm Plus access, and support account deletion. We do not
         sell personal information or use advertising trackers.</p>
-        <h2>Payments</h2>
-        <p>Apple subscriptions are processed by the App Store and validated through
-        RevenueCat. Other supported platforms may use their own approved payment
-        provider. Foxory never receives your complete payment-card details.</p>
         <h2>Photos and files</h2>
-        <p>Schedule photos and Excel files are selected only when you request an import.
-        Imported results are shown for review before any shifts are saved.</p>
-        <h2>Retention and your choices</h2>
+        <p>The app accesses your camera or photo library only when you choose to import
+        a schedule. Schedule images are read on your device; the image itself is not
+        uploaded to our servers. Only the shifts you review and confirm are saved to
+        your account.</p>
+        <h2>Sharing</h2>
+        <p>We share information only with the service providers needed to run the app:
+        our hosting and database providers, Apple and RevenueCat for App Store
+        subscriptions, and Ziina for card payments made outside the App Store. Payment
+        providers handle card details directly. We may also disclose information when
+        required by law.</p>
+        <h2>Security</h2>
+        <p>Data is sent over encrypted connections (HTTPS), passwords are stored only
+        as hashes, and access to your data requires your signed-in account.</p>
+        <h2>Retention and deletion</h2>
         <p>Your account and schedules remain until you delete them. You can permanently
-        delete your account from Legal &amp; Support in Settings.</p>
+        delete your account and its schedules in the app from Settings &rarr; Legal
+        &amp; Support, or by emailing
+        <a href="mailto:privacy@foxory.info">privacy@foxory.info</a>. Server logs are
+        kept for up to 30 days.</p>
+        <h2>Children</h2>
+        <p>The app is intended for adult healthcare workers and is not directed at
+        children.</p>
+        <h2>Changes</h2>
+        <p>If this policy changes, we will update this page and the date above.</p>
         <h2>Contact</h2>
         <p>Privacy: <a href="mailto:privacy@foxory.info">privacy@foxory.info</a><br>
         Support: <a href="mailto:support@foxory.info">support@foxory.info</a></p>

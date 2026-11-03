@@ -27,8 +27,17 @@ def test_privacy_page_describes_imports_and_data_use() -> None:
     assert response.status_code == 200
     assert "Privacy Policy" in body
     assert "RevenueCat" in body
-    assert "review before any shifts are saved" in body
+    assert "Only the shifts you review and confirm are saved" in body
     assert "privacy@foxory.info" in body
+
+
+def test_privacy_page_meets_play_store_requirements() -> None:
+    """Google Play rejects policies that omit the developer, sharing or deletion."""
+    body = _body(asyncio.run(privacy_page()))
+    assert "Foxory Shift Calendar" in body and "<strong>Foxory</strong>" in body
+    for heading in ("Information we collect", "Sharing", "Security", "Retention and deletion", "Contact"):
+        assert f"<h2>{heading}</h2>" in body
+    assert "delete your account" in body
 
 
 def test_terms_page_describes_app_store_subscription() -> None:

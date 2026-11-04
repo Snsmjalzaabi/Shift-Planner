@@ -107,3 +107,19 @@ def test_exports_show_the_roster_code(api):
     assert server.shift_label({"type": "off", "code": "X"}) == "X"
     assert server.shift_label({"type": "off", "code": "AL"}) == "AL"
     assert server.shift_label({"type": "day"}) == "Day Shift"
+
+
+def test_reviewer_password_follows_env(monkeypatch):
+    """App Review signs in with the env credentials even after they change."""
+    import asyncio
+
+    mock_db = AsyncMongoMockClient()["foxory_test"]
+    monkeypatch.setattr(server, "db", mock_db)
+    monkeypatch.setattr(server, "REVIEWER_EMAIL", "review@example.com")
+    monkeypatch.setattr(server, "REVIEWER_PASSWORD", "first-password-123")
+    asyncio.run(server.seed_reviewer())
+    monkeypatch.setattr(server, "REVIEWER_PASSWORD", "second-password-456")
+    asyncio.run(server.seed_reviewer())
+    user = asyncio.run(mock_db.users.find_one({"email": "review@example.com"}))
+    assert server.verify_password("second-password-456", user["hashed_password"])
+    assert user["plan"] == "plus"

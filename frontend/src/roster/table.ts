@@ -541,7 +541,7 @@ function hex(r: number, g: number, b: number): string {
 /**
  * Step inside the cell borders. The inset is capped at a few pixels: names in
  * a wide label column are left-aligned right against the border, and a
- * * proportional inset cut their first letter off ("ara" for "Sara").
+ * proportional inset cut their first letter off ("ara" for "Sara").
  */
 function insetRect(rect: Rect): Rect {
   const dx = Math.min(3, Math.max(2, Math.round(rectWidth(rect) * 0.06)));

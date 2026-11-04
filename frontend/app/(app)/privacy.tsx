@@ -30,7 +30,17 @@ export default function PrivacyPolicy() {
       <Section heading="Photos and files">
         <P>
           Schedule photos and Excel files are selected only when you request an import.
-          Imported results are shown for review before any shifts are saved.
+          They are read on your device, and imported results are shown for review before
+          any shifts are saved.
+        </P>
+      </Section>
+      <Section heading="Hospital schedule link (Plus)">
+        <P>
+          If you connect a schedule folder, you sign in with your work Microsoft account on
+          Microsoft&apos;s own page; Foxory never sees your password and has read-only access
+          to files your account can already open. Rosters are read on your device and only
+          your own shifts are saved. The sign-in token stays in your device&apos;s secure
+          storage; disconnect any time from the Import screen.
         </P>
       </Section>
       <Section heading="Retention and your choices">

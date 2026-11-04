@@ -123,3 +123,14 @@ def test_reviewer_password_follows_env(monkeypatch):
     user = asyncio.run(mock_db.users.find_one({"email": "review@example.com"}))
     assert server.verify_password("second-password-456", user["hashed_password"])
     assert user["plan"] == "plus"
+
+
+def test_schedule_link_sync_requires_plus(api):
+    client, _ = api
+    free = {**USER, "plan": "free"}
+    server.app.dependency_overrides[server.get_current_user] = lambda: free
+    body = {**_shift("2026-11-09", "D", "roster:x:2026-11-09"), "source": "schedule-link"}
+    r = client.post("/api/shifts", json=body)
+    assert r.status_code == 402
+    server.app.dependency_overrides[server.get_current_user] = lambda: USER
+    assert client.post("/api/shifts", json=body).status_code == 200

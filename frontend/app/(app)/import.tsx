@@ -30,6 +30,7 @@ import {
   extractEmployee,
   GridSource,
   RosterAnalysis,
+  suggestEmployee,
   summarise,
 } from "@/src/roster/extract";
 import { createImageGridSource } from "@/src/roster/imageSource";
@@ -64,7 +65,7 @@ type Loaded = {
 };
 
 export default function ImportScheduleScreen() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const router = useRouter();
   const [stage, setStage] = useState<Stage>("source");
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -137,8 +138,11 @@ export default function ImportScheduleScreen() {
       return;
     }
     setLoaded({ source, analysis, name, kind, image });
-    setEmployeeLine(null);
-    setEmployeeName("");
+    // Pre-select the row that matches the signed-in user's name; the user
+    // still confirms (or changes) it before anything is read.
+    const suggested = suggestEmployee(analysis.employees, user?.display_name);
+    setEmployeeLine(suggested?.line ?? null);
+    setEmployeeName(suggested?.name ?? "");
     setStage("employee");
   };
 

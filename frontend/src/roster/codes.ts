@@ -5,7 +5,15 @@
 // code that is stored and shown is always the code that was read; the calendar
 // colour bucket is a separate, display-only concern.
 
+/** Codes offered as one-tap choices in the review screen. */
 export const KNOWN_CODES = ["D", "N", "X", "XL", "AL"] as const;
+
+/**
+ * Codes accepted without asking: the one-tap codes plus the timed day shifts
+ * used on HUC rosters (D8, D10, D12). Anything else is kept as read but must
+ * be confirmed by the user.
+ */
+export const RECOGNISED_CODES: readonly string[] = [...KNOWN_CODES, "D8", "D10", "D12"];
 
 export type CodeReading = {
   /** Code as written (letters/digits only, upper-cased), or null if unreadable. */
@@ -25,7 +33,7 @@ const MAX_CODE_LENGTH = 6;
  * are never expanded. Anything outside the known set is kept as read but
  * flagged so it cannot be imported unchecked.
  */
-export function readCode(raw: string, knownCodes: readonly string[] = KNOWN_CODES): CodeReading {
+export function readCode(raw: string, knownCodes: readonly string[] = RECOGNISED_CODES): CodeReading {
   const text = String(raw ?? "");
   const trimmed = text.trim();
   if (!trimmed) return { code: null, raw: text, issues: [] };

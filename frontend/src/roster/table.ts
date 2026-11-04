@@ -163,7 +163,7 @@ export function lineMasks(image: RgbaImage): LineMasks {
  * those perpendicular rule positions: a real table rule always crosses the
  * other set of rules, while text inside a cell never does.
  */
-function runScores(
+export function runScores(
   mask: Uint8Array,
   width: number,
   height: number,
@@ -202,7 +202,7 @@ function runScores(
   return scores;
 }
 
-function pickLines(scores: Float64Array, span: number, minGap: number): number[] {
+export function pickLines(scores: Float64Array, span: number, minGap: number): number[] {
   let max = 0;
   for (const s of scores) max = Math.max(max, s);
   if (max <= 0) return [];
@@ -271,7 +271,7 @@ function fillRegularGaps(lines: number[], scores: Float64Array): number[] {
   return out;
 }
 
-function medianGap(lines: number[]): number {
+export function medianGap(lines: number[]): number {
   const gaps = lines.slice(1).map((v, i) => v - lines[i]).sort((a, b) => a - b);
   return gaps.length ? gaps[Math.floor(gaps.length / 2)] : 0;
 }
@@ -309,7 +309,158 @@ export function detectGridLines(image: RgbaImage, masks = lineMasks(image)): Gri
   }
   ys = fillRegularGaps(ys, rowScores);
   xs = fillRegularGaps(xs, colScores);
+  ({ xs, ys } = keepRulesThatCrossRules(masks, width, height, xs, ys));
+  ({ xs, ys } = addOpenEdges(masks, width, height, xs, ys));
   return { ys, xs };
+}
+
+/** Is the mask on at (along, across) within +-1 px across the line? */
+function maskNear(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  orientation: "vertical" | "horizontal",
+  across: number,
+  along: number,
+): boolean {
+  for (let d = -1; d <= 1; d += 1) {
+    const a = across + d;
+    if (orientation === "vertical") {
+      if (a < 0 || a >= width || along < 0 || along >= height) continue;
+      if (mask[along * width + a]) return true;
+    } else {
+      if (a < 0 || a >= height || along < 0 || along >= width) continue;
+      if (mask[a * width + along]) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Fraction of perpendicular rules that a candidate rule runs straight through.
+ * A real cell border continues past the corners where it meets other borders;
+ * a letter stroke or a line of sideways text stops before it reaches one (text
+ * has padding), so it only ever "crosses" a handful of other false lines.
+ */
+export function crossingScore(
+  masks: LineMasks,
+  width: number,
+  height: number,
+  orientation: "vertical" | "horizontal",
+  at: number,
+  perpendicular: number[],
+): number {
+  const mask = orientation === "vertical" ? masks.vertical : masks.horizontal;
+  let crossed = 0;
+  let total = 0;
+  const on = (p: number) => maskNear(mask, width, height, orientation, at, p);
+  const outer = new Set([perpendicular[0], perpendicular[perpendicular.length - 1]]);
+  for (const p of perpendicular) {
+    total += 1;
+    // A border is unbroken right through the corner; text stops a pixel or two
+    // short of the neighbouring border, leaving a gap at the crossing.
+    const centre = on(p - 1) || on(p) || on(p + 1);
+    if (!centre) continue;
+    const before = [2, 3, 4].filter((k) => on(p - k)).length;
+    const after = [2, 3, 4].filter((k) => on(p + k)).length;
+    const gapBefore = !on(p - 1) && !on(p - 2);
+    const gapAfter = !on(p + 1) && !on(p + 2);
+    if (before >= 2 && after >= 2 && !gapBefore && !gapAfter) crossed += 1;
+    // Reaching the corner from one side only happens legitimately at the
+    // outer border of the table.
+    else if (outer.has(p) && ((before >= 2 && !gapBefore) || (after >= 2 && !gapAfter))) crossed += 0.5;
+  }
+  return total ? crossed / total : 0;
+}
+
+function keepRulesThatCrossRules(
+  masks: LineMasks,
+  width: number,
+  height: number,
+  xs: number[],
+  ys: number[],
+): GridLines {
+  const threshold = 0.4;
+  /**
+   * Keep strong rules, plus weak ones that sit exactly one cell pitch from the
+   * strong rules on both sides (a faint border in a blurred photo). Text
+   * strokes sit mid-cell, half a pitch from the borders, and are dropped.
+   */
+  const filter = (lines: number[], perpendicular: number[], orientation: "vertical" | "horizontal") => {
+    const scores = lines.map((at) => crossingScore(masks, width, height, orientation, at, perpendicular));
+    const strong = lines.filter((_, i) => scores[i] >= threshold);
+    const pitch = medianGap(strong);
+    return lines.filter((at, i) => {
+      if (scores[i] >= threshold) return true;
+      if (scores[i] < 0.1 || pitch <= 0) return false;
+      const prev = [...strong].reverse().find((s) => s < at);
+      const next = strong.find((s) => s > at);
+      if (prev === undefined || next === undefined) return false;
+      return Math.abs(at - prev - pitch) <= pitch * 0.25 && Math.abs(next - at - pitch) <= pitch * 0.25;
+    });
+  };
+  for (let round = 0; round < 4; round += 1) {
+    if (xs.length < 3 || ys.length < 3) break;
+    const nextXs = filter(xs, ys, "vertical");
+    const nextYs = filter(ys, nextXs, "horizontal");
+    if (nextXs.length < 2 || nextYs.length < 2) break;
+    const stable = nextXs.length === xs.length && nextYs.length === ys.length;
+    xs = nextXs;
+    ys = nextYs;
+    if (stable) break;
+  }
+  return { xs, ys };
+}
+
+/**
+ * Spreadsheet screenshots often have no border on the outer edge of the first
+ * row (the date header) or column. When most rules keep going past the
+ * outermost detected line, close the table where they end.
+ */
+function addOpenEdges(
+  masks: LineMasks,
+  width: number,
+  height: number,
+  xs: number[],
+  ys: number[],
+): GridLines {
+  if (xs.length < 3 || ys.length < 3) return { xs, ys };
+  const rowHeight = medianGap(ys);
+  const colWidth = medianGap(xs);
+  const extent = (
+    orientation: "vertical" | "horizontal",
+    lines: number[],
+    from: number,
+    step: -1 | 1,
+    limit: number,
+  ) => {
+    const mask = orientation === "vertical" ? masks.vertical : masks.horizontal;
+    const runs: number[] = [];
+    for (const at of lines) {
+      let run = 0;
+      let gap = 0;
+      for (let p = from + step * 2; step < 0 ? p >= 0 : p < limit; p += step) {
+        if (maskNear(mask, width, height, orientation, at, p)) {
+          run += 1 + gap;
+          gap = 0;
+        } else if (gap < 2) gap += 1;
+        else break;
+      }
+      runs.push(run);
+    }
+    runs.sort((a, b) => a - b);
+    return runs[Math.floor(runs.length / 2)];
+  };
+  const out = { xs: [...xs], ys: [...ys] };
+  const top = extent("vertical", xs, ys[0], -1, height);
+  if (top >= rowHeight * 0.6 && ys[0] - top - 2 >= 0) out.ys.unshift(Math.max(0, ys[0] - top - 2));
+  const bottom = extent("vertical", xs, ys[ys.length - 1], 1, height);
+  if (bottom >= rowHeight * 0.6) out.ys.push(Math.min(height - 1, ys[ys.length - 1] + bottom + 2));
+  const left = extent("horizontal", ys, xs[0], -1, width);
+  if (left >= colWidth * 0.6 && xs[0] - left - 2 >= 0) out.xs.unshift(Math.max(0, xs[0] - left - 2));
+  const right = extent("horizontal", ys, xs[xs.length - 1], 1, width);
+  if (right >= colWidth * 0.6) out.xs.push(Math.min(width - 1, xs[xs.length - 1] + right + 2));
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,9 +538,14 @@ function hex(r: number, g: number, b: number): string {
   return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/**
+ * Step inside the cell borders. The inset is capped at a few pixels: names in
+ * a wide label column are left-aligned right against the border, and a
+ * proportional inset cut their first letter off ("ara" for "Sara").
+ */
 function insetRect(rect: Rect): Rect {
-  const dx = Math.max(2, Math.round(rectWidth(rect) * 0.06));
-  const dy = Math.max(2, Math.round(rectHeight(rect) * 0.06));
+  const dx = Math.min(3, Math.max(2, Math.round(rectWidth(rect) * 0.06)));
+  const dy = Math.min(3, Math.max(2, Math.round(rectHeight(rect) * 0.06)));
   return {
     left: rect.left + dx,
     top: rect.top + dy,
@@ -512,12 +668,13 @@ export function glyphSimilarity(a: TableCell, b: TableCell): number {
 // Grid assembly
 // ---------------------------------------------------------------------------
 /**
- * Rule detection runs on a copy no larger than this (longest side). Rules are
- * long, high-contrast structures that survive downscaling well, and this keeps
- * the pass fast on the phone's JS engine; cell contents are still analysed
- * and read at full resolution.
+ * Rule detection runs on a copy of at most this many pixels, to keep the pass
+ * fast on the phone's JS engine; cell contents are still analysed and read at
+ * full resolution. The limit is by area, not by the longest side: a wide
+ * monthly roster screenshot has rows only ~15 px tall, and shrinking it would
+ * merge text with the cell borders.
  */
-const ANALYSIS_MAX_SIDE = 1200;
+const ANALYSIS_MAX_PIXELS = 2_200_000;
 
 function downsample(image: RgbaImage, scale: number): RgbaImage {
   const width = Math.max(1, Math.round(image.width * scale));
@@ -579,7 +736,7 @@ function refineLine(image: RgbaImage, axis: "x" | "y", approx: number): number {
 }
 
 export function buildTable(image: RgbaImage): TableGrid | null {
-  const scale = Math.min(1, ANALYSIS_MAX_SIDE / Math.max(image.width, image.height));
+  const scale = Math.min(1, Math.sqrt(ANALYSIS_MAX_PIXELS / (image.width * image.height)));
   const small = scale < 1 ? downsample(image, scale) : image;
   const masks = lineMasks(small);
   const smallLines = detectGridLines(small, masks);

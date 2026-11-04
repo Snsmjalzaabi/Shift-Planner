@@ -20,6 +20,13 @@ function toGridCell(cell: TableCell): GridCell {
   };
 }
 
+/** Text heights (px, upscaled) tried for a shift-code cell, in order. */
+const CODE_SCALES = [56, 36, 80, 28];
+/** Different heights used for the independent second reading. */
+const CHECK_SCALES = [44, 64, 24];
+/** Letters whose capital and small forms have the same shape. */
+const CASE_AMBIGUOUS = /^[cosuvwxz]+$/;
+
 const usefulHeader = (text: string) => {
   const t = parseHeaderText(text);
   return t.day !== undefined || t.weekday !== undefined || !!parseMonthMention(text);
@@ -42,6 +49,47 @@ export function createImageGridSource(image: RgbaImage, table: TableGrid, ocr: O
 
   const logical = (gridCell: GridCell) => table.cells[gridCell.row][gridCell.col];
 
+  // Typical capital-letter height in the table: the median ink height of the
+  // short upright cells (shift codes, mostly capitals and digits).
+  let capHeight: number | null = null;
+  const typicalCapHeight = () => {
+    if (capHeight !== null) return capHeight;
+    const heights: number[] = [];
+    const seen = new Set<TableCell>();
+    for (const row of table.cells)
+      for (const cell of row) {
+        if (seen.has(cell) || cell.blank || cell.rotated || !cell.inkBox || cell.colSpan > 1) continue;
+        seen.add(cell);
+        const w = cell.inkBox.right - cell.inkBox.left;
+        const h = cell.inkBox.bottom - cell.inkBox.top;
+        if (w <= h * 4) heights.push(h);
+      }
+    heights.sort((a, b) => a - b);
+    capHeight = heights.length ? heights[Math.floor(heights.length / 2)] : 0;
+    return capHeight;
+  };
+
+  /**
+   * "x" and "X" differ only in size. When the recogniser returns a small
+   * letter of that kind but the glyph is as tall as the table's capitals,
+   * it is the capital.
+   */
+  const fixCase = (cell: TableCell, text: string) => {
+    const compact = text.replace(/\s+/g, "");
+    if (!CASE_AMBIGUOUS.test(compact) || !cell.inkBox) return text;
+    const reference = typicalCapHeight();
+    const h = cell.inkBox.bottom - cell.inkBox.top;
+    return reference > 0 && h >= reference * 0.85 ? compact.toUpperCase() : text;
+  };
+
+  const readAt = async (cell: TableCell, height: number) => {
+    const crop = renderCellForOcr(image, cell.rect, 0, height);
+    if (!crop) return "";
+    calls += 1;
+    return fixCase(cell, (await ocr(crop)).replace(/\s+/g, " ").trim());
+  };
+  const scaleUsed = new Map<TableCell, number>();
+
   return {
     table,
     ocrCalls: () => calls,
@@ -51,6 +99,18 @@ export function createImageGridSource(image: RgbaImage, table: TableGrid, ocr: O
     async read(gridCell: GridCell, purpose: ReadPurpose) {
       const cell = logical(gridCell);
       if (cell.blank) return "";
+      if (purpose === "code") {
+        // Single letters are read unreliably at some sizes; try a few and keep
+        // the first non-empty reading. It is cross-checked in verifyCode.
+        for (const height of CODE_SCALES) {
+          const text = await readAt(cell, height);
+          if (text) {
+            scaleUsed.set(cell, height);
+            return text;
+          }
+        }
+        return cell.rotated ? ocrCell(cell, 90) : "";
+      }
       if (purpose !== "header") {
         const upright = await ocrCell(cell, 0);
         if (upright || !cell.rotated) return upright;
@@ -96,11 +156,19 @@ export function createImageGridSource(image: RgbaImage, table: TableGrid, ocr: O
     },
     async verifyCode(gridCell, text) {
       const cell = logical(gridCell);
-      const crop = renderCellForOcr(image, cell.rect, 0, 44);
-      if (!crop) return false;
-      calls += 1;
-      const second = (await ocr(crop)).replace(/[^0-9A-Za-z]/g, "");
-      return second === text;
+      const used = scaleUsed.get(cell);
+      // Agreement at another size confirms the code; a different non-empty
+      // reading contradicts it; empty readings at every size say nothing.
+      let anyReading = false;
+      for (const height of CHECK_SCALES.concat(CODE_SCALES)) {
+        if (height === used) continue;
+        const second = (await readAt(cell, height)).replace(/[^0-9A-Za-z]/g, "");
+        if (!second) continue;
+        anyReading = true;
+        if (second === text) return true;
+        return false;
+      }
+      return anyReading ? false : null;
     },
     size(axis, index) {
       const lines = axis === "col" ? table.lines.xs : table.lines.ys;

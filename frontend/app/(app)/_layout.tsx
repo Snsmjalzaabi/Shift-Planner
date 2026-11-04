@@ -5,10 +5,11 @@ import { StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAuth } from "@/src/context/AuthContext";
+import { registerDailySync, syncIfDue } from "@/src/sync/scheduleLink";
 import { colors, spacing } from "@/src/theme/colors";
 
 export default function AppTabsLayout() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, token, user } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
@@ -17,6 +18,14 @@ export default function AppTabsLayout() {
       router.replace("/(auth)/login");
     }
   }, [isAuthenticated, isLoading, router]);
+
+  // Schedule-link sync (Plus): catch up on open, and keep the daily
+  // background check registered.
+  useEffect(() => {
+    if (!token || !user) return;
+    syncIfDue(token, user).catch(() => {});
+    registerDailySync();
+  }, [token, user]);
 
   if (!isAuthenticated) {
     return <View style={styles.blank} />;

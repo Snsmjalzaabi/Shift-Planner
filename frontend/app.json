@@ -2,7 +2,7 @@
   "expo": {
     "name": "Foxory Shift Calendar",
     "slug": "foxory-shift-calendar",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/images/foxory-logo.png",
     "scheme": "foxory",
@@ -13,7 +13,20 @@
       "bundleIdentifier": "com.foxory.shiftcalendar",
       "buildNumber": "6",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Roster",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "org.openxmlformats.spreadsheetml.sheet",
+              "public.png",
+              "public.jpeg"
+            ]
+          }
+        ],
+        "LSSupportsOpeningDocumentsInPlace": false
       }
     },
     "android": {
@@ -23,7 +36,26 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.foxory.shiftcalendar",
-      "versionCode": 14
+      "versionCode": 14,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            },
+            {
+              "mimeType": "image/png"
+            },
+            {
+              "mimeType": "image/jpeg"
+            }
+          ]
+        }
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -50,7 +82,8 @@
           "microphonePermission": false
         }
       ],
-      "./plugins/withOptionalCamera"
+      "./plugins/withOptionalCamera",
+      "expo-background-task"
     ],
     "experiments": {
       "typedRoutes": true

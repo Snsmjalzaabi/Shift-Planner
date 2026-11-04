@@ -3,7 +3,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -52,6 +52,24 @@ import {
 } from "@/src/roster/session";
 import { createSheetGridSource } from "@/src/roster/sheetSource";
 import { buildTable } from "@/src/roster/table";
+import { onIncomingFile, takeIncomingFile } from "@/src/sync/incomingFile";
+import {
+  isMicrosoftConfigured,
+  microsoftAccount,
+  MicrosoftAuthError,
+  signInWithMicrosoft,
+  signOutMicrosoft,
+} from "@/src/sync/microsoftAuth";
+import {
+  clearScheduleLink,
+  downloadNewestRoster,
+  isPlusUser,
+  loadScheduleLink,
+  runScheduleSync,
+  ScheduleLinkSettings,
+  setScheduleEmployee,
+  setScheduleLink,
+} from "@/src/sync/scheduleLink";
 import { colors, radius, spacing } from "@/src/theme/colors";
 
 type Stage = "source" | "employee" | "review";
@@ -62,6 +80,8 @@ type Loaded = {
   name: string;
   kind: "roster-image" | "roster-xlsx";
   image?: { uri: string; width: number; height: number };
+  /** Opened from the saved schedule link: the confirmed row is remembered for sync. */
+  fromLink?: boolean;
 };
 
 export default function ImportScheduleScreen() {
@@ -84,7 +104,14 @@ export default function ImportScheduleScreen() {
     loaded: boolean;
   } | null>(null);
   const [currentLoading, setCurrentLoading] = useState(false);
+  const [link, setLink] = useState<ScheduleLinkSettings | null>(null);
+  const [linkInput, setLinkInput] = useState("");
+  const [linkAccount, setLinkAccount] = useState<string | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [linkMessage, setLinkMessage] = useState<string | null>(null);
   const progressAt = useRef(0);
+  const isPlus = isPlusUser(user);
+  const linkAvailable = Platform.OS !== "web";
 
   const plan: PlannedAction[] = useMemo(
     () => (stage === "review" ? buildPlan(employeeName, items, existing) : []),
@@ -124,6 +151,7 @@ export default function ImportScheduleScreen() {
     name: string,
     kind: Loaded["kind"],
     image?: Loaded["image"],
+    fromLink = false,
   ) => {
     const { analysis, error: problem } = await analyseRoster(source, {
       fallback: fallbackMonth(),
@@ -137,13 +165,161 @@ export default function ImportScheduleScreen() {
       setError("A date header was found, but no employee rows below it.");
       return;
     }
-    setLoaded({ source, analysis, name, kind, image });
-    // Pre-select the row that matches the signed-in user's name; the user
-    // still confirms (or changes) it before anything is read.
-    const suggested = suggestEmployee(analysis.employees, user?.display_name);
+    setLoaded({ source, analysis, name, kind, image, fromLink });
+    // Pre-select the row that matches the signed-in user's name (or the row
+    // they confirmed for their schedule link); the user still confirms it.
+    const remembered = fromLink ? link?.employeeName : null;
+    const suggested =
+      (remembered ? suggestEmployee(analysis.employees, remembered) : null) ??
+      suggestEmployee(analysis.employees, user?.display_name);
     setEmployeeLine(suggested?.line ?? null);
     setEmployeeName(suggested?.name ?? "");
     setStage("employee");
+  };
+
+  const openImage = async (
+    uri: string,
+    name: string,
+    size?: { width?: number; height?: number },
+    fromLink = false,
+  ) => {
+    setBusy("image");
+    setProgress("Finding the table…");
+    const engine = await createDeviceOcrEngine();
+    if (!engine) {
+      setError("Text recognition is not available on this device. Try importing an Excel file instead.");
+      return;
+    }
+    const image = await loadRosterImage(uri, size);
+    const table = buildTable(image);
+    if (!table) {
+      setError(
+        "No table grid was found. Use a straight, uncropped screenshot of the roster with its row and column lines visible.",
+      );
+      return;
+    }
+    const source = createImageGridSource(image, table, engine);
+    await startAnalysis(source, name, "roster-image", { uri, width: image.width, height: image.height }, fromLink);
+  };
+
+  const openWorkbook = async (data: ArrayBuffer, name: string, fromLink = false) => {
+    setBusy("xlsx");
+    const sheets = await readExcelFile(data);
+    let lastError = "No dates were found in the workbook.";
+    for (const sheet of sheets) {
+      const source = createSheetGridSource(sheet.data, sheet.sheet);
+      const { analysis, error: problem } = await analyseRoster(source, { fallback: fallbackMonth() });
+      if (analysis && analysis.employees.length) {
+        await startAnalysis(source, name, "roster-xlsx", undefined, fromLink);
+        return;
+      }
+      if (problem) lastError = problem;
+    }
+    setError(lastError);
+  };
+
+  /** A roster file opened from another app, or downloaded from the schedule link. */
+  const openFile = async (file: { uri: string; name: string; kind: "xlsx" | "image" }, fromLink = false) => {
+    setError(null);
+    setStage("source");
+    try {
+      if (file.kind === "image") {
+        await openImage(file.uri, file.name, undefined, fromLink);
+        return;
+      }
+      try {
+        await openWorkbook(await new File(file.uri).arrayBuffer(), file.name, fromLink);
+      } catch (caught) {
+        // Android may hand over an image without a file extension.
+        if (file.uri.startsWith("content://")) await openImage(file.uri, file.name, undefined, fromLink);
+        else throw caught;
+      }
+    } catch (caught: any) {
+      setError(caught?.message || "This file could not be opened as a roster.");
+    } finally {
+      setBusy(null);
+      setProgress("");
+    }
+  };
+
+  // Files opened into Foxory ("Open in Foxory") arrive here.
+  const openFileRef = useRef(openFile);
+  openFileRef.current = openFile;
+  useEffect(() => {
+    const pending = takeIncomingFile();
+    if (pending) openFileRef.current(pending);
+    return onIncomingFile(() => {
+      const file = takeIncomingFile();
+      if (file) openFileRef.current(file);
+    });
+  }, []);
+
+  const refreshLink = useCallback(async () => {
+    if (!linkAvailable) return;
+    const settings = await loadScheduleLink();
+    setLink(settings);
+    setLinkInput(settings?.link ?? "");
+    setLinkAccount(settings ? await microsoftAccount() : null);
+  }, [linkAvailable]);
+  useEffect(() => {
+    refreshLink();
+  }, [refreshLink]);
+
+  const describeSync = (settings: ScheduleLinkSettings | null) => {
+    const r = settings?.lastResult;
+    if (!settings?.lastSyncAt || !r) return null;
+    const when = new Date(settings.lastSyncAt).toLocaleString();
+    const parts = [`${r.added} added`, `${r.updated} updated`, `${r.unchanged} unchanged`];
+    if (r.needsReview.length) parts.push(`${r.needsReview.length} to review`);
+    return `Last sync ${when} · ${parts.join(" · ")}`;
+  };
+
+  const syncLink = async () => {
+    if (!token || !user) return;
+    if (!isPlus) {
+      router.push("/(app)/upgrade");
+      return;
+    }
+    setLinkBusy(true);
+    setLinkMessage(null);
+    setError(null);
+    try {
+      if (!link || link.link !== linkInput.trim()) await setScheduleLink(linkInput);
+      if (!(await microsoftAccount())) await signInWithMicrosoft();
+      const { settings, result } = await runScheduleSync({ token, user });
+      await refreshLink();
+      if (result?.status === "needs-employee") {
+        setLinkMessage("Choose your name once; future syncs will find it automatically.");
+        await openFile(await downloadNewestRoster(settings.link), true);
+        return;
+      }
+      setLinkMessage(describeSync(settings));
+    } catch (caught: any) {
+      await refreshLink();
+      if (caught instanceof MicrosoftAuthError && caught.code === "cancelled") return;
+      setError(caught?.message || "The schedule could not be synced.");
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  const reviewLink = async () => {
+    if (!link) return;
+    setLinkBusy(true);
+    try {
+      await openFile(await downloadNewestRoster(link.link), true);
+    } catch (caught: any) {
+      setError(caught?.message || "The newest roster could not be opened.");
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  const removeLink = async () => {
+    await clearScheduleLink();
+    await signOutMicrosoft();
+    setLinkMessage(null);
+    await refreshLink();
   };
 
   const readImage = async (mode: "camera" | "library") => {
@@ -165,28 +341,8 @@ export default function ImportScheduleScreen() {
           ? await ImagePicker.launchCameraAsync({ mediaTypes: ["images"], quality: 1 })
           : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 1 });
       if (result.canceled) return;
-      setBusy("image");
-      setProgress("Finding the table…");
       const asset = result.assets[0];
-      const engine = await createDeviceOcrEngine();
-      if (!engine) {
-        setError("Text recognition is not available on this device. Try importing an Excel file instead.");
-        return;
-      }
-      const image = await loadRosterImage(asset.uri, { width: asset.width, height: asset.height });
-      const table = buildTable(image);
-      if (!table) {
-        setError(
-          "No table grid was found. Use a straight, uncropped screenshot of the roster with its row and column lines visible.",
-        );
-        return;
-      }
-      const source = createImageGridSource(image, table, engine);
-      await startAnalysis(source, asset.fileName || "Schedule image", "roster-image", {
-        uri: asset.uri,
-        width: image.width,
-        height: image.height,
-      });
+      await openImage(asset.uri, asset.fileName || "Schedule image", { width: asset.width, height: asset.height });
     } catch (caught: any) {
       setError(caught?.message || "The schedule image could not be processed. Try a clearer image or the Excel import.");
     } finally {
@@ -205,21 +361,9 @@ export default function ImportScheduleScreen() {
         base64: false,
       });
       if (result.canceled) return;
-      setBusy("xlsx");
       const asset = result.assets[0];
       const data = asset.file ? await asset.file.arrayBuffer() : await new File(asset.uri).arrayBuffer();
-      const sheets = await readExcelFile(data);
-      let lastError = "No dates were found in the workbook.";
-      for (const sheet of sheets) {
-        const source = createSheetGridSource(sheet.data, sheet.sheet);
-        const { analysis, error: problem } = await analyseRoster(source, { fallback: fallbackMonth() });
-        if (analysis && analysis.employees.length) {
-          await startAnalysis(source, asset.name || "Excel schedule", "roster-xlsx");
-          return;
-        }
-        if (problem) lastError = problem;
-      }
-      setError(lastError);
+      await openWorkbook(data, asset.name || "Excel schedule");
     } catch (caught: any) {
       setError(caught?.message || "The Excel schedule could not be read.");
     } finally {
@@ -238,6 +382,8 @@ export default function ImportScheduleScreen() {
     setBusy("row");
     setError(null);
     try {
+      // Remember the confirmed row so the daily sync finds it by itself.
+      if (loaded.fromLink && employeeName.trim()) await setScheduleEmployee(employeeName.trim());
       const cells = await extractEmployee(loaded.source, loaded.analysis, employeeLine, report);
       const summary = summarise(cells, loaded.analysis);
       const nextItems = toReviewItems(cells);
@@ -456,6 +602,101 @@ export default function ImportScheduleScreen() {
                 </TouchableOpacity>
               )}
             </View>
+
+            {linkAvailable && (
+              <View style={styles.sourceCard} testID="schedule-link-card">
+                <View style={styles.sourceIcon}>
+                  <Ionicons name="link-outline" size={25} color={colors.neonHover} />
+                </View>
+                <View style={styles.sourceCopy}>
+                  <Text style={styles.sourceTitle}>Hospital schedule link</Text>
+                  <Text style={styles.sourceText}>
+                    Paste the SharePoint folder where your unit posts its roster. Foxory signs in with
+                    your work account, finds your name, imports only your row, and checks for
+                    changes every day.
+                  </Text>
+                </View>
+                {isPlus ? (
+                  <>
+                    <TextInput
+                      value={linkInput}
+                      onChangeText={setLinkInput}
+                      placeholder="https://…sharepoint.com/…/Schedules/…"
+                      placeholderTextColor={colors.textMuted}
+                      style={styles.dateInput}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="url"
+                      editable={!linkBusy}
+                      testID="schedule-link-input"
+                    />
+                    {!!link && (
+                      <Text style={styles.currentRosterNote} testID="schedule-link-status">
+                        {[
+                          linkAccount ? `Signed in as ${linkAccount}` : "Not signed in",
+                          link.employeeName ? `Row: ${link.employeeName}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                        {describeSync(link) ? `\n${describeSync(link)}` : ""}
+                      </Text>
+                    )}
+                    {!!link?.lastError && <Text style={styles.issueText}>{link.lastError}</Text>}
+                    {!!linkMessage && <Text style={styles.issueText}>{linkMessage}</Text>}
+                    {!isMicrosoftConfigured() && (
+                      <Text style={styles.issueText}>Work-account sign-in is coming in the next app update.</Text>
+                    )}
+                    {linkBusy ? (
+                      <ActivityIndicator color={colors.neon} style={{ marginTop: spacing.xs }} />
+                    ) : (
+                      <>
+                        <TouchableOpacity
+                          style={[
+                            styles.primaryAction,
+                            (!linkInput.trim() || !isMicrosoftConfigured() || !!busy) && styles.disabledButton,
+                          ]}
+                          onPress={syncLink}
+                          disabled={!linkInput.trim() || !isMicrosoftConfigured() || !!busy}
+                          testID="schedule-link-sync"
+                        >
+                          <Ionicons name="sync-outline" size={18} color="#140C27" />
+                          <Text style={styles.primaryActionText}>
+                            {link ? "Sync now" : "Connect & sync"}
+                          </Text>
+                        </TouchableOpacity>
+                        {!!link && (
+                          <View style={styles.actionRow}>
+                            {(!!link.lastResult?.needsReview.length || !link.employeeName) && (
+                              <ActionButton
+                                label={link.employeeName ? "Review flagged" : "Choose my row"}
+                                icon="eye-outline"
+                                onPress={reviewLink}
+                                disabled={!!busy}
+                              />
+                            )}
+                            <ActionButton
+                              label="Remove link"
+                              icon="close-circle-outline"
+                              onPress={removeLink}
+                              disabled={!!busy}
+                            />
+                          </View>
+                        )}
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.primaryAction}
+                    onPress={() => router.push("/(app)/upgrade")}
+                    testID="schedule-link-upgrade"
+                  >
+                    <Ionicons name="lock-closed-outline" size={18} color="#140C27" />
+                    <Text style={styles.primaryActionText}>Connect schedule link · Plus</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
 
             <View style={styles.codeGuide}>
               <Text style={styles.codeGuideTitle}>Codes are kept exactly as written</Text>

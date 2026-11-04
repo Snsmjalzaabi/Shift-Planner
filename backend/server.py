@@ -536,10 +536,20 @@ async def privacy_page():
         a schedule. Schedule images are read on your device; the image itself is not
         uploaded to our servers. Only the shifts you review and confirm are saved to
         your account.</p>
+        <h2>Hospital schedule link (Plus)</h2>
+        <p>If you choose to connect a schedule folder, you sign in with your work
+        Microsoft account on Microsoft's own sign-in page; Foxory never sees your
+        password. Foxory then has read-only access to roster files your account can
+        already open. Roster files are read on your device: Foxory finds the row with
+        your name and saves only your own shifts to your account. Other people's names
+        and schedules in the roster are not saved or sent to our servers. Your
+        Microsoft sign-in token is stored only in your device's secure storage, and you
+        can disconnect at any time from the Import screen.</p>
         <h2>Sharing</h2>
         <p>We share information only with the service providers needed to run the app:
         our hosting and database providers, Apple and RevenueCat for App Store
-        subscriptions, and Ziina for card payments made outside the App Store. Payment
+        subscriptions, Ziina for card payments made outside the App Store, and Microsoft
+        when you connect a work account to read your schedule folder. Payment
         providers handle card details directly. We may also disclose information when
         required by law.</p>
         <h2>Security</h2>
@@ -1351,6 +1361,9 @@ async def create_shift(body: ShiftCreate, current_user: dict = Depends(get_curre
     _require_current_month_or_plus(current_user, body.date)
     code = _clean_code(body.code)
     import_key = (body.import_key or "").strip() or None
+    # Automatic sync from a hospital schedule link is a Plus feature.
+    if (body.source or "").strip() == "schedule-link":
+        _require_plus(current_user)
     if import_key:
         existing = await db.shifts.find_one(
             {"user_id": current_user["id"], "import_key": import_key}, {"_id": 0}

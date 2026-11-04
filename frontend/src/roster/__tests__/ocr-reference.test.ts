@@ -22,6 +22,7 @@ const RECALL_FLOOR: Record<string, number> = {
   vertical: 0.7,
   poor_quality: 0,
   high_dpi: 0.75,
+  huc_style: 0.6,
 };
 
 describe.skipIf(!hasTesseract())("roster image reader against reference (real OCR)", () => {

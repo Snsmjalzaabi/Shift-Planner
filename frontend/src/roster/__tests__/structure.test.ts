@@ -7,7 +7,7 @@ import { loadFixture, oracleSource } from "./helpers";
 // each cell supplied from the fixture's ground truth (no OCR involved).
 const FALLBACK = { year: 2026, month: 11 };
 
-describe.each(["monthly_rotated", "cross_year", "weekly", "vertical", "poor_quality", "high_dpi"])(
+describe.each(["monthly_rotated", "cross_year", "weekly", "vertical", "poor_quality", "high_dpi", "huc_style"])(
   "roster structure: %s",
   (name) => {
     it("finds every date column with the right calendar date", async () => {

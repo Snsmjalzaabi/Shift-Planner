@@ -9,8 +9,10 @@
 //   4. read only the chosen employee's cells, one cell -> one date
 // No step ever merges values from two employees or two dates.
 
-import { CodeReading, readCode } from "./codes";
+import { CodeReading, readCode, RECOGNISED_CODES } from "./codes";
 import { AxisColumn, ColumnDate, DateAxisResult, inferDateAxis, parseHeaderText, parseMonthMention } from "./dates";
+
+const KNOWN_SET = new Set<string>(RECOGNISED_CODES);
 
 export type GridCell = {
   /** Identity of the logical (possibly merged) cell. */
@@ -38,7 +40,7 @@ export interface GridSource {
    * Optional second, independent reading of a shift-code cell (OCR at another
    * scale). Returns false when it disagrees with `text`.
    */
-  verifyCode?(cell: GridCell, text: string): Promise<boolean>;
+  verifyCode?(cell: GridCell, text: string): Promise<boolean | null>;
   /** Optional: pixel width of a column / height of a row. */
   size?(axis: "col" | "row", index: number): number;
 }
@@ -312,14 +314,26 @@ export async function analyseRoster(
       const span = orientation === "dates-across" ? cell.rowSpan : cell.colSpan;
       return span === 1;
     });
-    if (filled === 0 && ownLabels.every((c) => c.blank)) continue;
+    // Section headings ("Level 6 HUC") have no shifts at all.
+    if (filled === 0) continue;
+    // Count rows ("Level 6 HUC Days", "Total RN Nights") hold numbers, not
+    // shift codes: sample a few cells and skip the row if all are numbers.
+    const sample = dateLine.positions
+      .map((pos) => axisCell(source, orientation, line, pos))
+      .filter((cell) => !cell.blank)
+      .filter((_, i, all) => i === 0 || i === Math.floor(all.length / 2) || i === all.length - 1);
+    let numeric = 0;
+    for (const cell of sample) {
+      const text = (await cache.read(cell, "code")).trim();
+      if (/^\d{1,3}([.,]\d+)?$/.test(text)) numeric += 1;
+    }
+    if (sample.length && numeric === sample.length) continue;
     options.progress?.(`Reading names… ${employees.length + 1}`);
     const parts: string[] = [];
     for (const cell of ownLabels) {
       const text = (await cache.read(cell, "label")).trim();
       if (text) parts.push(text);
     }
-    if (filled === 0 && !parts.some((p) => /[A-Za-z]{2,}/.test(p))) continue;
     const name =
       parts.filter((p) => /[A-Za-z]{2,}/.test(p)).sort((a, b) => b.length - a.length)[0] ??
       parts[0] ??
@@ -341,6 +355,55 @@ export async function analyseRoster(
     },
     reads: cache.reads,
   };
+}
+
+function nameTokens(name: string): string[] {
+  return name
+    .toLowerCase()
+    .replace(/\(.*?\)/g, " ")
+    .split(/[^a-z\u0600-\u06ff]+/)
+    .filter((t) => t.length >= 2 && t !== "al");
+}
+
+/** Edit distance, for matching OCR'd names that are off by a letter. */
+function distance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i += 1) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const tmp = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return row[b.length];
+}
+
+/**
+ * The employee row that best matches the signed-in user's name, or null when
+ * no row matches clearly. Used only to pre-select a row; the user confirms it.
+ */
+export function suggestEmployee(employees: EmployeeRow[], userName: string | null | undefined): EmployeeRow | null {
+  const wanted = nameTokens(userName ?? "");
+  if (!wanted.length) return null;
+  let best: { row: EmployeeRow; score: number } | null = null;
+  let second = 0;
+  for (const row of employees) {
+    const have = nameTokens(row.name);
+    let score = 0;
+    for (const w of wanted) {
+      const hit = have.some((h) => h === w || (w.length >= 4 && distance(h, w) <= 1));
+      if (hit) score += 1;
+    }
+    score /= wanted.length;
+    if (!best || score > best.score) {
+      second = best?.score ?? 0;
+      best = { row, score };
+    } else if (score > second) second = score;
+  }
+  if (!best || best.score < 0.99 || second >= best.score) return null;
+  return best.row;
 }
 
 /** Step 4: read one employee's cells. */
@@ -367,8 +430,13 @@ export async function extractEmployee(
     done += 1;
     progress?.(`Reading shifts… ${done}`);
     const reading = readCode(await cache.read(cell, "code"));
-    if (reading.code && source.verifyCode && !(await source.verifyCode(cell, reading.code)))
-      reading.issues.push("A second reading of this cell disagreed; confirm the code.");
+    if (reading.code && source.verifyCode) {
+      const agreed = await source.verifyCode(cell, reading.code);
+      if (agreed === false) reading.issues.push("A second reading of this cell disagreed; confirm the code.");
+      // No second reading at all: only a known code read cleanly is trusted.
+      else if (agreed === null && reading.issues.length === 0 && !KNOWN_SET.has(reading.code))
+        reading.issues.push("This cell could only be read once; confirm the code.");
+    }
     readings.set(cell.key, reading);
   }
 
@@ -451,7 +519,7 @@ export function summarise(cells: ExtractedCell[], analysis: RosterAnalysis): Ext
   if (filled > 0 && uncertain / filled > 0.25)
     warnings.push(`Only ${detected} of ${filled} filled cells were read with confidence; the rest need checking.`);
   const unrecognised = cells.filter((c) => c.issues.some((i) => i.includes("not a recognised code"))).length;
-  if (unrecognised) warnings.push(`${unrecognised} cell${unrecognised === 1 ? " has" : "s have"} a code that is not in the known list (D, N, X, XL, AL).`);
+  if (unrecognised) warnings.push(`${unrecognised} cell${unrecognised === 1 ? " has" : "s have"} a code that is not in the known list (${RECOGNISED_CODES.join(", ")}).`);
   if (duplicates) warnings.push(`${duplicates} date${duplicates === 1 ? " is" : "s are"} repeated in the roster.`);
   const misaligned = analysis.dates.filter((d) => d.status === "derived").length;
   return {

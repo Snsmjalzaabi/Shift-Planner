@@ -327,6 +327,85 @@ def main() -> None:
     (HERE / "poor_quality.json").write_text(json.dumps(base, indent=2) + "\n")
 
 
+def huc_style() -> None:
+    """Mirrors the layout of the real HUC roster that failed in production
+    (made-up names): no border above the date header, sideways dd-Mon-yy dates,
+    a merged title cell, red section headings with a merged grey band, count
+    rows ("... Days" / "... Nights") under each section, total columns on the
+    right, grey weekend columns, coloured AL/XL cells and D8/D10/D12 codes.
+    Small, like a phone screenshot of a wide sheet (rows ~15 px)."""
+    rng = random.Random(4011)
+    dates = daterange(date(2026, 9, 21), 42)
+    sections = [
+        ("Level 6 HUC", [("Rana Khalil", "a"), ("Faisal Darwish", "a"), ("Huda Sami", "a"), ("Ali Rashed (Admin)", "admin")]),
+        ("Level 7 HUC", [("Mona Fares", "a"), ("Saeed Al Kaabi", "a"), ("Lina Haddad (HUC 2)", "a")]),
+    ]
+    totals = ["Total Days", "Total Nights", "Shift Total"]
+    label_w, date_w, total_w = 160, 32, 26
+    rows: list[tuple[str, object]] = [("header", None)]
+    codes: dict[str, dict[date, str]] = {}
+    for title, people in sections:
+        rows.append(("section", title))
+        for name, kind in people:
+            row: dict[date, str] = {}
+            for d in dates:
+                r = rng.random()
+                if kind == "admin":
+                    if d.weekday() < 5 and r < 0.8:
+                        row[d] = rng.choice(["D10", "D10", "D8", "D12"])
+                    elif r < 0.9:
+                        row[d] = "N"
+                elif r < 0.3:
+                    row[d] = "D"
+                elif r < 0.55:
+                    row[d] = "N"
+                elif r < 0.72:
+                    row[d] = "X"
+                elif r < 0.78:
+                    row[d] = rng.choice(["AL", "XL"])
+            codes[name] = row
+            rows.append(("person", name))
+        rows.append(("count", f"{title} Days"))
+        rows.append(("count", f"{title} Nights"))
+    col_widths = [label_w] + [date_w] * len(dates) + [total_w] * len(totals)
+    row_heights = [70] + [15] * (len(rows) - 1)
+    sheet = Sheet(col_widths, row_heights)
+    sheet.set(0, 0, Cell("HUC's Schedule", "#C0C0C0", size=12))
+    for i, d in enumerate(dates):
+        fill = "#A6A6A6" if d.weekday() in (5, 6) else "#DDD9D3"
+        sheet.set(0, 1 + i, Cell(f"{d.day:02d}-{MONTHS[d.month - 1]}-{d.year % 100:02d}", fill, rotate=90, size=11))
+    for j, t in enumerate(totals):
+        sheet.set(0, 1 + len(dates) + j, Cell(t, "#C0C0C0", rotate=90, size=9, bold=True))
+    employees = []
+    for r, (kind, value) in enumerate(rows[1:], start=1):
+        if kind == "section":
+            sheet.set(r, 0, Cell(str(value), "#C00000", bold=True, align="left", size=11))
+            sheet.set(r, 1, Cell("", "#BFBFBF", colspan=len(dates) + len(totals)))
+        elif kind == "person":
+            name = str(value)
+            employees.append((name, name))
+            sheet.set(r, 0, Cell(name, "#F8D7D7", bold=False, align="left", size=11))
+            for i, d in enumerate(dates):
+                code = codes[name].get(d, "")
+                fill = {"AL": "#92D050", "XL": "#92D050"}.get(code) or ("#A6A6A6" if d.weekday() in (5, 6) else None)
+                sheet.set(r, 1 + i, Cell(code, fill, bold=code in ("N", "D"), size=10))
+            n_days = sum(1 for c in codes[name].values() if c.startswith("D"))
+            n_nights = sum(1 for c in codes[name].values() if c == "N")
+            for j, v in enumerate([n_days, n_nights, 20]):
+                sheet.set(r, 1 + len(dates) + j, Cell(str(v), "#92D050" if j == 2 else None, size=9))
+        else:
+            sheet.set(r, 0, Cell(str(value), "#FFE699", align="left", size=9, bold=True))
+            for i, d in enumerate(dates):
+                sheet.set(r, 1 + i, Cell(str(rng.choice([1, 1, 2])), "#FFE699", size=9))
+    img = render(sheet, pad=0)
+    # Like the real screenshot: no border above the date header, no outer frame.
+    draw = ImageDraw.Draw(img)
+    draw.line([(0, 0), (img.width, 0)], fill="#DDD9D3", width=1)
+    draw.line([(0, 0), (label_w, 0)], fill="#C0C0C0", width=1)
+    truth("huc_style", img, employees, dates, codes, "columns",
+          "Layout of the real HUC roster (made-up names): open top edge, sideways dd-Mon-yy, sections, count rows, totals.")
+
+
 def high_dpi() -> None:
     """monthly_rotated as a 2x (retina) screenshot: exercises the downscaled
     rule detection + full-resolution cell reading path."""
@@ -344,3 +423,4 @@ def high_dpi() -> None:
 if __name__ == "__main__":
     main()
     high_dpi()
+    huc_style()

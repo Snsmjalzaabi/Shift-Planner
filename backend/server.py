@@ -348,8 +348,11 @@ async def seed_superuser() -> None:
 
 async def seed_reviewer() -> None:
     """Seed an App Store / Play Store reviewer account that starts on Plus
-    so reviewers can exercise every gated feature without
-    paying. Never overwrites the password on subsequent boots."""
+    so reviewers can exercise every gated feature without paying.
+
+    The REVIEWER_PASSWORD env var is the source of truth: it is re-applied on
+    every boot, so the credentials entered in App Store Connect / Play Console
+    always work even if the password was changed after the first seed."""
     if not REVIEWER_EMAIL or not REVIEWER_PASSWORD:
         return
     existing = await db.users.find_one({"email": REVIEWER_EMAIL})
@@ -378,6 +381,8 @@ async def seed_reviewer() -> None:
             "plus_expires_at": None,
             "updated_at": now,
         }
+        if not verify_password(REVIEWER_PASSWORD, existing.get("hashed_password", "")):
+            set_doc["hashed_password"] = hash_password(REVIEWER_PASSWORD)
         await db.users.update_one({"_id": existing["_id"]}, {"$set": set_doc})
         logger.info("Reviewer account %s already present; plan re-affirmed", REVIEWER_EMAIL)
 

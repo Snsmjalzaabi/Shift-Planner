@@ -41,7 +41,6 @@
     },
     "devclient": {
       "distribution": "internal",
-      "channel": "development",
       "env": {
         "EXPO_PUBLIC_BACKEND_URL": "https://shift-planner-hymq.onrender.com"
       },

@@ -40,7 +40,6 @@
       "channel": "preview"
     },
     "devclient": {
-      "developmentClient": true,
       "distribution": "internal",
       "channel": "development",
       "env": {
@@ -48,18 +47,8 @@
       },
       "android": {
         "buildType": "apk",
+        "gradleCommand": ":app:assembleDebug",
         "credentialsSource": "local"
-      }
-    },
-    "devprobe": {
-      "developmentClient": true,
-      "distribution": "internal",
-      "channel": "development",
-      "env": {
-        "EXPO_PUBLIC_BACKEND_URL": "https://shift-planner-hymq.onrender.com"
-      },
-      "android": {
-        "buildType": "apk"
       }
     }
   },

@@ -28,6 +28,12 @@ import {
   wasApplePurchaseCancelled,
 } from "@/src/lib/applePurchases";
 import { api } from "@/src/lib/api";
+import {
+  externalCheckoutAllowed,
+  PLUS_FEATURES,
+  PLUS_UNAVAILABLE_NOTE,
+  purchasePathFor,
+} from "@/src/lib/billingPolicy";
 import { colors, radius, spacing } from "@/src/theme/colors";
 
 type BillingConfig = Awaited<ReturnType<typeof api.billingConfig>>;
@@ -46,9 +52,16 @@ export default function UpgradeScreen() {
   }>({ kind: "idle" });
 
   const isApple = Platform.OS === "ios";
+  // Android (Google Play): no purchase path until Google Play Billing is
+  // integrated, so no outside checkout, price or payment-provider text.
+  const noPurchase = purchasePathFor(Platform.OS) === "none";
   const isPlus = user?.plan === "plus" || !!user?.is_superuser;
 
   useEffect(() => {
+    if (noPurchase) {
+      setLoading(false);
+      return;
+    }
     (async () => {
       try {
         const cfg = await api.billingConfig();
@@ -59,7 +72,7 @@ export default function UpgradeScreen() {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [noPurchase]);
 
   useEffect(() => {
     if (!isApple || !user?.id || !isApplePurchaseConfigured()) return;
@@ -75,6 +88,7 @@ export default function UpgradeScreen() {
 
   const doUpgrade = useCallback(async () => {
     if (!token || !user) return;
+    if (!isApple && !externalCheckoutAllowed(Platform.OS)) return;
     setCheckingOut(true);
     setStatus({
       kind: "pending",
@@ -188,13 +202,16 @@ export default function UpgradeScreen() {
     }
   }, [isApple, refresh, token, user]);
 
-  const plan = config?.plans?.[0];
+  const plan = noPurchase ? undefined : config?.plans?.[0];
+  const features = noPurchase ? PLUS_FEATURES : plan?.features || [];
   const displayedPrice = isApple
     ? `${applePackage?.product.priceString || "$2.99"}/month`
     : plan?.price_display || "AED 10.99/month";
-  const purchaseAvailable = isApple
-    ? isApplePurchaseConfigured() && Boolean(applePackage)
-    : Boolean(config?.configured);
+  const purchaseAvailable = noPurchase
+    ? false
+    : isApple
+      ? isApplePurchaseConfigured() && Boolean(applePackage)
+      : Boolean(config?.configured);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top"]}>
@@ -230,9 +247,12 @@ export default function UpgradeScreen() {
           <Text style={styles.heroSub}>
             {isPlus
               ? "All Plus features are unlocked. Thank you for supporting the app."
-              : "Multi-month planning, XLSX exports, and email delivery for one monthly price."}
+              : noPurchase
+                ? "Multi-month planning, XLSX exports, and email delivery."
+                : "Multi-month planning, XLSX exports, and email delivery for one monthly price."}
           </Text>
 
+          {!noPurchase && (
           <View style={styles.priceRow}>
             <Text style={styles.priceMain}>
               {displayedPrice}
@@ -244,6 +264,7 @@ export default function UpgradeScreen() {
               </Text>
             </View>
           </View>
+          )}
         </View>
 
         {loading ? (
@@ -253,7 +274,7 @@ export default function UpgradeScreen() {
         ) : (
           <View style={styles.card}>
             <Text style={styles.cardTitle}>What you get</Text>
-            {(plan?.features || []).map((f) => (
+            {features.map((f) => (
               <View key={f} style={styles.featureRow}>
                 <View style={styles.featureIcon}>
                   <Ionicons
@@ -270,19 +291,21 @@ export default function UpgradeScreen() {
 
             <View style={styles.metaRow}>
               <Ionicons
-                name="card-outline"
+                name={noPurchase ? "information-circle-outline" : "card-outline"}
                 size={14}
                 color={colors.textMuted}
               />
-              <Text style={styles.metaText}>
-                {isApple ? (
+              <Text style={styles.metaText} testID="upgrade-purchase-note">
+                {noPurchase ? (
+                  PLUS_UNAVAILABLE_NOTE
+                ) : isApple ? (
                   <>Secure subscription through the <Text style={styles.metaBold}>Apple App Store</Text></>
                 ) : (
                   <>Powered by <Text style={styles.metaBold}>Ziina</Text> · secure hosted checkout</>
                 )}
               </Text>
             </View>
-            {!isApple && config?.test_mode && (
+            {externalCheckoutAllowed(Platform.OS) && config?.test_mode && (
               <View style={styles.metaRow}>
                 <Ionicons
                   name="flask-outline"
@@ -336,7 +359,7 @@ export default function UpgradeScreen() {
           </View>
         )}
 
-        {!isPlus && (
+        {!isPlus && !noPurchase && (
           <Pressable
             testID="upgrade-cta"
             onPress={doUpgrade}
@@ -373,7 +396,7 @@ export default function UpgradeScreen() {
           </View>
         )}
 
-        {!purchaseAvailable && !loading && (
+        {!purchaseAvailable && !loading && !noPurchase && (
           <Text style={styles.warnText}>
             {isApple
               ? "Apple subscriptions will be available after App Store setup is complete."
@@ -404,11 +427,13 @@ export default function UpgradeScreen() {
           </View>
         )}
 
+        {!noPurchase && (
         <Text style={styles.legal}>
           {isApple
             ? "Payment is charged to your Apple ID. Subscription renews monthly until canceled in App Store settings."
             : `Access lasts 30 days per payment. Ziina Payment Services · Test mode is ${config?.test_mode ? "ON" : "OFF"}.`}
         </Text>
+        )}
 
         <View style={{ marginTop: spacing.xl, alignItems: "center" }}>
           <CreatorSignature />

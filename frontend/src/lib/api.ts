@@ -1,3 +1,7 @@
+import { Platform } from "react-native";
+
+import { externalCheckoutAllowed, sanitizeServerMessage } from "./billingPolicy";
+
 export const BACKEND_URL = (
   process.env.EXPO_PUBLIC_BACKEND_URL || "https://shift-planner-hymq.onrender.com"
 ).replace(/\/$/, "");
@@ -77,6 +81,9 @@ async function request<T>(
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        // Lets the server withhold web-only checkout from store builds.
+        // Native only: native fetch has no CORS preflight to satisfy.
+        ...(Platform.OS !== "web" ? { "X-Foxory-Platform": Platform.OS } : {}),
         ...(headers || {}),
       },
     });
@@ -95,6 +102,9 @@ async function request<T>(
         }
       } catch {
         // ignore
+      }
+      if (res.status === 402 || code === "plus_required") {
+        detail = sanitizeServerMessage(Platform.OS, detail, "This feature is part of Foxory Plus.");
       }
       const err: ApiError = new Error(detail);
       err.status = res.status;
@@ -272,11 +282,16 @@ export const api = {
       }[];
     }>("/billing/config"),
 
+  // Web only. Store builds must never open an outside checkout
+  // (Google Play Payments policy, App Store guideline 3.1.1).
   checkout: (
     token: string,
     body: { success_url?: string; cancel_url?: string } = {},
-  ) =>
-    request<{
+  ) => {
+    if (!externalCheckoutAllowed(Platform.OS)) {
+      return Promise.reject(new Error("Checkout is not available in this app."));
+    }
+    return request<{
       payment_intent_id: string;
       redirect_url: string;
       status: string;
@@ -286,7 +301,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
       token,
-    }),
+    });
+  },
 
   verifyCheckout: (token: string, payment_intent_id: string) =>
     request<{

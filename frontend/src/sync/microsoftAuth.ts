@@ -103,7 +103,7 @@ export async function signInWithMicrosoft(): Promise<string | undefined> {
     const description = (result.type === "error" && (result.params?.error_description || result.error?.message)) || "";
     if (/AADSTS65001|AADSTS90094|admin|consent/i.test(description))
       throw new MicrosoftAuthError(
-        "Your hospital needs to approve Foxory for work-account sign-in. Ask your IT team to approve “Foxory Shift Calendar”.",
+        "Your hospital needs to approve Foxory for work-account sign-in. Ask your IT team to approve “Foxory Shift Planner”.",
         "admin-approval",
       );
     throw new MicrosoftAuthError("Microsoft sign-in did not complete. Please try again.", "failed");

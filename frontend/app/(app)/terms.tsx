@@ -9,7 +9,7 @@ export default function TermsOfService() {
     >
       <Section heading="Using Foxory">
         <P>
-          Foxory Shift Calendar is a personal planning tool. Keep your sign-in details
+          Foxory Shift Planner is a personal planning tool. Keep your sign-in details
           secure and use the app only for lawful purposes.
         </P>
       </Section>

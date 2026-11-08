@@ -1,0 +1,31 @@
+Foxory Shift Planner helps shift workers organize their work schedule in a clear monthly calendar.
+
+Plan day and night shifts, review your upcoming workdays, and keep your schedule easy to follow.
+
+YOUR WORK CALENDAR
+• See the whole month at a glance
+• Add day, night and on-call shifts and days off
+• Set start and end times, a location and a note for each shift
+
+PLAN BEFORE YOU CONFIRM
+• New shifts start as drafts, so you can plan without changing your confirmed calendar
+• Confirm a shift when it is final
+• Filter the planner by draft or confirmed shifts
+
+IMPORT YOUR ROSTER
+• Import a roster from a photo, a screenshot or an Excel file
+• Choose your row and the app reads the dates and shift codes for you
+• Review every date and code before anything is added; uncertain cells are never added without your check
+
+SYNC ACROSS DEVICES
+• Your shifts are saved to your Foxory account
+• Sign in on another device to see the same schedule
+
+FOXORY PLUS (optional monthly subscription)
+• Plan shifts beyond the current month
+• Export your shift plan as an Excel (XLSX) file
+• Attach the export when you email your plan
+
+The calendar, drafts, roster import and sync are free for the current month. You can delete your account and its data at any time from Settings > Legal.
+
+Questions or feedback? Email support@foxory.info.

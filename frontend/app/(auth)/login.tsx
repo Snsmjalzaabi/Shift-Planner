@@ -81,7 +81,7 @@ export default function LoginScreen() {
         <View style={styles.header}>
           <FoxoryLogo size="xl" withHalo testID="login-logo" />
           <Text style={styles.title} testID="app-name">
-            Foxory Shift Calendar
+            Foxory Shift Planner
           </Text>
           <Text style={styles.subtitle} testID="app-subtitle">
             Smart shift planning for nurses and caregivers.

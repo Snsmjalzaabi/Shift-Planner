@@ -37,7 +37,7 @@ export function DashboardHeader({ showBack, title }: Props) {
           )}
           <View style={styles.titleBlock}>
             <Text style={styles.appName} numberOfLines={1}>
-              {title || "Foxory Shift Calendar"}
+              {title || "Foxory Shift Planner"}
             </Text>
             {!title && (
               <Text style={styles.appTagline} numberOfLines={1}>

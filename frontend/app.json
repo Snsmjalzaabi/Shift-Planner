@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Foxory Shift Calendar",
+    "name": "Foxory Shift Planner",
     "slug": "foxory-shift-calendar",
     "version": "1.0.3",
     "orientation": "portrait",
@@ -77,8 +77,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Foxory Shift Calendar to choose a schedule image for local import.",
-          "cameraPermission": "Allow Foxory Shift Calendar to photograph a schedule for local import.",
+          "photosPermission": "Allow Foxory Shift Planner to choose a schedule image for local import.",
+          "cameraPermission": "Allow Foxory Shift Planner to photograph a schedule for local import.",
           "microphonePermission": false
         }
       ],

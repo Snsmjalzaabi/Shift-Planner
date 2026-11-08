@@ -71,7 +71,7 @@ export default function SettingsScreen() {
           <Row
             icon="information-circle-outline"
             label="App name"
-            value="Foxory Shift Calendar"
+            value="Foxory Shift Planner"
           />
           <Row
             icon="ribbon-outline"

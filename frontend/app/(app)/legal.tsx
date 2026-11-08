@@ -64,11 +64,11 @@ export default function Legal() {
   return (
     <LegalScreen
       title="Legal & Support"
-      eyebrow="Foxory Shift Calendar"
+      eyebrow="Foxory Shift Planner"
       testID="legal-index"
     >
       <P>
-        Everything you need to know about how Foxory Shift Calendar handles
+        Everything you need to know about how Foxory Shift Planner handles
         your data, plus one-tap access to account controls Apple and Google
         require to live inside the app.
       </P>

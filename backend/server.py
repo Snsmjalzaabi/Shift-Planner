@@ -463,7 +463,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Hmac-Signature"],
+    allow_headers=["Authorization", "Content-Type", "X-Hmac-Signature", "X-Foxory-Platform"],
 )
 api_router = APIRouter(prefix="/api")
 
@@ -809,7 +809,7 @@ def _require_plus(user: dict[str, Any]) -> None:
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={
                 "code": "plus_required",
-                "message": "This feature is available on the Plus $2.99/month plan.",
+                "message": "This feature is part of Foxory Plus.",
             },
         )
 
@@ -871,8 +871,59 @@ def _price_display() -> str:
     return f"{ZIINA_CURRENCY} {whole}.{fract:02d}/month"
 
 
+PLUS_FEATURES = [
+    "XLSX export with Plan Summary + Shift Details",
+    "Attach XLSX to email exports",
+    "One-tap draft plan email from your device's mail app",
+    "Multi-month planning (any past/future month)",
+    "Priority support",
+]
+
+
+def _client_platform(request: Request) -> str:
+    """'android', 'ios' or 'web'.
+
+    New app builds send X-Foxory-Platform. Older Android builds don't, but
+    React Native's Android networking (OkHttp) identifies itself in the
+    User-Agent, so those are recognised too.
+    """
+    declared = (request.headers.get("x-foxory-platform") or "").strip().lower()
+    if declared in {"android", "ios", "web"}:
+        return declared
+    agent = (request.headers.get("user-agent") or "").lower()
+    if agent.startswith("okhttp") or ("android" in agent and "mozilla" not in agent):
+        return "android"
+    return "web"
+
+
+def _external_checkout_allowed(request: Request) -> bool:
+    # Google Play Payments policy: the Play-distributed Android app may sell
+    # Plus only through Google Play Billing, so it gets no outside checkout.
+    return _client_platform(request) != "android"
+
+
 @api_router.get("/billing/config")
-async def billing_config():
+async def billing_config(request: Request):
+    if not _external_checkout_allowed(request):
+        # No provider, price, test-mode or checkout details for Android.
+        return {
+            "provider": "none",
+            "test_mode": False,
+            "configured": False,
+            "currency": "",
+            "price_fils": 0,
+            "price_display": "Not available in this app",
+            "plans": [
+                {
+                    "id": PLUS_PLAN_ID,
+                    "name": "Foxory Plus",
+                    "price_display": "Not available in this app",
+                    "badge_display": "Foxory Plus",
+                    "period": "month",
+                    "features": PLUS_FEATURES,
+                }
+            ],
+        }
     return {
         "provider": "ziina",
         "test_mode": ZIINA_TEST_MODE,
@@ -887,13 +938,7 @@ async def billing_config():
                 "price_display": _price_display(),
                 "badge_display": "Plus $2.99/month",
                 "period": "month",
-                "features": [
-                    "XLSX export with Plan Summary + Shift Details",
-                    "Attach XLSX to email exports",
-                    "One-tap draft plan email from your device's mail app",
-                    "Multi-month planning (any past/future month)",
-                    "Priority support",
-                ],
+                "features": PLUS_FEATURES,
             }
         ],
     }
@@ -1007,8 +1052,18 @@ DEFAULT_CANCEL_URL = "foxory://billing/cancel"
 
 @api_router.post("/billing/checkout")
 async def create_checkout(
-    body: CheckoutRequest, current_user: dict = Depends(get_current_user)
+    body: CheckoutRequest,
+    request: Request,
+    current_user: dict = Depends(get_current_user),
 ):
+    if not _external_checkout_allowed(request):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "checkout_unavailable",
+                "message": "Checkout is not available in this app.",
+            },
+        )
     if not ZIINA_API_KEY:
         raise HTTPException(
             status_code=503,

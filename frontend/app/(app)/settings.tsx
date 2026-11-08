@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { CreatorSignature } from "@/src/components/CreatorSignature";
@@ -108,7 +108,9 @@ export default function SettingsScreen() {
               <Text style={styles.planSub}>
                 {isPlus
                   ? "Multi-month planning, XLSX export, email delivery."
-                  : "AED 10.99/month · XLSX exports, email sending, multi-month planning."}
+                  : Platform.OS === "web"
+                    ? "AED 10.99/month · XLSX exports, email sending, multi-month planning."
+                    : "XLSX exports, email sending, multi-month planning."}
               </Text>
             </View>
             <Ionicons

@@ -47,8 +47,7 @@
       },
       "android": {
         "buildType": "apk",
-        "gradleCommand": ":app:assembleDebug",
-        "credentialsSource": "local"
+        "gradleCommand": ":app:assembleDebug"
       }
     }
   },

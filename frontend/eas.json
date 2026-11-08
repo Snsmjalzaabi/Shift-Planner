@@ -4,6 +4,14 @@
     "appVersionSource": "local"
   },
   "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "development",
+      "env": {
+        "EXPO_PUBLIC_BACKEND_URL": "https://shift-planner-hymq.onrender.com"
+      }
+    },
     "production": {
       "distribution": "store",
       "env": {
